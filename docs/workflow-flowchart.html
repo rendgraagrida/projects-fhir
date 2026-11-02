@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Global HL7 FHIR Lab — Workflow Kolaborasi Aman</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:32px;background:#f8fafc;color:#172033;font-family:"Segoe UI",Arial,sans-serif}main{max-width:940px;margin:auto}header{margin-bottom:22px}h1{font-size:27px;margin:0 0 8px;color:#0f3f6e}header p{margin:0;color:#526178;line-height:1.5}.stage{background:white;border:1px solid #cbd5e1;border-left:5px solid #0f6ebd;border-radius:8px;padding:16px 20px;break-inside:avoid}h2{margin:0 0 12px;font-size:17px;color:#0f3f6e}.row{display:grid;grid-template-columns:220px 1fr;gap:24px}.action{font-weight:600}.action code{display:inline-block;color:#0f3f6e;background:#eaf3fc;border:1px solid #b8d2eb;padding:5px 9px;border-radius:4px;font-size:15px}.detail{line-height:1.5;font-size:14px}.detail p{margin:0 0 5px}.detail p:last-child{margin-bottom:0}.hint{margin-top:8px;font-size:12px;color:#526178;font-weight:400}.arrow{text-align:center;font-size:22px;color:#0f6ebd;line-height:29px;height:29px}.warning{margin-top:22px;border:1px solid #d6aa49;background:#fffbeb;padding:15px 18px;border-radius:6px;font-size:14px;line-height:1.5;break-inside:avoid}.warning strong{color:#754700}footer{margin-top:16px;font-size:12px;color:#526178;line-height:1.5}@media(max-width:650px){body{padding:18px}.row{grid-template-columns:1fr;gap:12px}h1{font-size:23px}}@media print{@page{size:210mm 400mm;margin:12mm}body{padding:0;background:white;print-color-adjust:exact;-webkit-print-color-adjust:exact}main{max-width:none}.row{grid-template-columns:175px 1fr}}
+</style>
+</head>
+<body><main>
+<header>
+  <h1>Global HL7 FHIR Lab — Alur Kerja Kolaborasi Bersama Tim</h1>
+  <p>Perintah Anda dipisahkan dari tindakan sistem. Satu feature branch, satu PR yang dipilih, izin deployment terpisah.</p>
+</header>
+
+<section class="stage">
+  <h2>1. Mulai pekerjaan</h2>
+  <div class="row">
+    <div class="action">
+      <code>task &lt;nama&gt;</code>
+      <div class="hint">bun scripts/task-branch.ts</div>
+    </div>
+    <div class="detail">
+      <p>Task terkait tetap di feature branch aktif. Branch baru berasal dari <code>development</code> untuk pekerjaan terpisah yang disepakati.</p>
+      <p>Gunakan nama deskriptif seperti <code>feat/kfa-normalization</code> atau <code>fix/org-address</code>. Jangan menimpa working tree yang kotor.</p>
+    </div>
+  </div>
+</section>
+
+<div class="arrow" aria-hidden="true">↓</div>
+
+<section class="stage">
+  <h2>2. Ambil perkembangan tim</h2>
+  <div class="row">
+    <div class="action">
+      <code>sync</code>
+      <div class="hint">bun scripts/sync-branch.ts</div>
+    </div>
+    <div class="detail">
+      <p>Feature branch menerima update <code>origin/&lt;branch&gt;</code> yang sama dengan fast-forward, lalu merge <code>origin/development</code> tanpa menulis ulang riwayat tim.</p>
+      <p>Tree yang kotor dihentikan dengan aman. File lokal yang diabaikan (ignored paths) diproteksi dari tabrakan incoming commit.</p>
+    </div>
+  </div>
+</section>
+
+<div class="arrow" aria-hidden="true">↓</div>
+
+<section class="stage">
+  <h2>3. Publikasikan commit</h2>
+  <div class="row">
+    <div class="action">
+      <code>push</code>
+      <div class="hint">Hanya feature branch yang ditinjau.</div>
+    </div>
+    <div class="detail">
+      <p>Hanya dilakukan atas perintah eksplisit <code>push</code>. Stage file yang relevan dengan task: <code>git add -- &lt;files&gt;</code> lalu buat semantic commit.</p>
+      <p>Commit diunggah ke GitHub. Tidak melakukan direct push ke <code>main</code> atau <code>development</code>.</p>
+    </div>
+  </div>
+</section>
+
+<div class="arrow" aria-hidden="true">↓</div>
+
+<section class="stage">
+  <h2>4. Ajukan naskah perubahan</h2>
+  <div class="row">
+    <div class="action">
+      <code>pr</code>
+      <div class="hint">bun scripts/create-pr.ts</div>
+    </div>
+    <div class="detail">
+      <p>Branch harus bersih, sudah di-push dan mencakup development terbaru. Precheck lokal (typecheck & rules) wajib lolos.</p>
+      <p>PR baru dibuat berstatus <code>OPEN</code> (ready for review) dengan target base <code>development</code>.</p>
+    </div>
+  </div>
+</section>
+
+<div class="arrow" aria-hidden="true">↓</div>
+
+<section class="stage">
+  <h2>5. Tunggu pengujian GitHub CI</h2>
+  <div class="row">
+    <div class="action">
+      Lihat tab Checks
+      <div class="hint">gh pr checks &lt;nomor&gt;</div>
+    </div>
+    <div class="detail">
+      <p>Runner CI menjalankan Canonical CI: Structure, Rules Sync, TypeScript Typecheck, FHIR Conformance Tests (54 tests), dan Production Build.</p>
+      <p>Status berubah dari IN_PROGRESS menjadi SUCCESS atau FAILED. Setiap commit baru memicu pengujian ulang.</p>
+    </div>
+  </div>
+</section>
+
+<div class="arrow" aria-hidden="true">↓</div>
+
+<section class="stage">
+  <h2>6. Gabungkan satu PR yang dipilih</h2>
+  <div class="row">
+    <div class="action">
+      <code>merge [PR]</code>
+      <div class="hint">Hanya setelah CI SUCCESS.</div>
+    </div>
+    <div class="detail">
+      <p>Wajib branch bersih, PR OPEN, SHA sesuai, dan Canonical CI SUCCESS. API error atau pending check menolak merge.</p>
+      <p>Merge menggabungkan feature PR ke dalam <code>development</code>. Tidak ada auto-deploy yang menyertai merge.</p>
+    </div>
+  </div>
+</section>
+
+<div class="arrow" aria-hidden="true">↓</div>
+
+<section class="stage">
+  <h2>7. Update integrasi atau siapkan rilis</h2>
+  <div class="row">
+    <div class="action">
+      <code>deploy</code>
+      <div class="hint">Update staging / preview.</div>
+    </div>
+    <div class="detail">
+      <p>Deploy memperbarui environment staging dari branch <code>development</code> yang telah teruji.</p>
+      <p>Uji integrasi visual sandbox SIMRS, PGlite WASM engine, dan SQL-on-FHIR query runner di staging.</p>
+    </div>
+  </div>
+</section>
+
+<div class="arrow" aria-hidden="true">↓</div>
+
+<section class="stage">
+  <h2>8. Promosi dan deployment produksi</h2>
+  <div class="row">
+    <div class="action">
+      <code>merge main</code>
+      <div class="hint">Lalu, jika diotorisasi:</div>
+      <code>deploy prod</code>
+    </div>
+    <div class="detail">
+      <p><code>merge main</code> menyiapkan release PR dari <code>development</code> ke <code>main</code> dan menunggu Canonical CI lolos.</p>
+      <p><code>deploy prod</code> mendispatch alur rilis produksi resmi. Membutuhkan otorisasi eksplisit terpisah dari perintah merge.</p>
+    </div>
+  </div>
+</section>
+
+<aside class="warning">
+  <strong>Prasyarat Keselamatan Operasional (Strict Safeguards)</strong><br>
+  1. <strong>DILARANG KERAS AUTO-PUSH:</strong> AI Agent tidak boleh melakukan <code>git push</code> tanpa perintah eksplisit "push".<br>
+  2. <strong>DILARANG KERAS AUTO-MERGE:</strong> AI Agent tidak boleh me-merge PR tanpa perintah eksplisit "merge".<br>
+  3. <strong>ZERO-DOCKER HOST DEV:</strong> Dev server lokal dijalankan murni di host Bun via <code>bun scripts/local.ts</code> atau <code>.\scripts\local.ps1</code>. PGlite berjalan via WASM di browser.
+</aside>
+
+<footer>
+  Standar Alur Kerja Global HL7 FHIR Learning Lab. Acuan: Rules08 (<code>.agents/rules/08-workflow-environments.md</code>), <code>scripts/README.md</code>, dan <code>AGENTS.md</code>.
+</footer>
+</main></body></html>

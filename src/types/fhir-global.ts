@@ -98,6 +98,15 @@ export interface FhirResourceBase {
   extension?: Extension[];
   modifierExtension?: Extension[];
 }
+export type Resource = FhirResourceBase;
+export type DomainResource = FhirResourceBase;
+export type PrimitiveMetadata = { id?: string; extension?: Extension[] };
+export interface Attachment { contentType?: string; language?: string; data?: string; url?: string; size?: number; hash?: string; title?: string; creation?: string }
+export interface Annotation { authorString?: string; authorReference?: Reference; time?: string; text: string }
+export interface Range { low?: Quantity; high?: Quantity }
+export interface RatioRange { lowNumerator?: Quantity; highNumerator?: Quantity; denominator?: Quantity }
+export interface Timing { event?: string[]; repeat?: { boundsPeriod?: Period; frequency?: number; period?: number; periodUnit?: string; count?: number; duration?: number; durationUnit?: string; dayOfWeek?: string[]; timeOfDay?: string[]; when?: string; offset?: number }[]; code?: CodeableConcept }
+
 
 export interface Organization extends FhirResourceBase {
   resourceType: 'Organization';
@@ -203,7 +212,7 @@ export interface Encounter extends FhirResourceBase {
   episodeOfCare?: Reference[];
   basedOn?: Reference[];
   participant?: { type?: CodeableConcept[]; period?: Period; individual?: Reference }[];
-  appointment?: Reference;
+  appointment?: Reference[];
   period: Period;
   reasonCode?: CodeableConcept[];
   diagnosis?: { condition: Reference; use?: CodeableConcept; rank?: number }[];
@@ -223,6 +232,7 @@ export interface Consent extends FhirResourceBase {
   performer?: Reference[];
   organization?: Reference[];
   policy?: { authority?: string; uri?: string }[];
+  policyRule?: CodeableConcept;
   provision?: { type?: string; period?: Period; actor?: { role: CodeableConcept; reference: Reference }[]; action?: CodeableConcept[] };
 }
 export interface Provenance extends FhirResourceBase {
@@ -286,6 +296,14 @@ export interface ObservationComponent {
   valueQuantity?: Quantity;
   valueCodeableConcept?: CodeableConcept;
   valueString?: string;
+  valueBoolean?: boolean;
+  valueInteger?: number;
+  valueRange?: Range;
+  valueRatio?: Ratio;
+  valueTime?: string;
+  valueDateTime?: string;
+  valuePeriod?: Period;
+  dataAbsentReason?: CodeableConcept;
   interpretation?: CodeableConcept[];
   referenceRange?: { low?: Quantity; high?: Quantity; text?: string }[];
 }
@@ -345,7 +363,7 @@ export interface Medication extends FhirResourceBase {
   code: CodeableConcept;
   status?: 'active' | 'inactive' | 'entered-in-error';
   form?: CodeableConcept;
-  amount?: { numerator?: Ratio; denominator?: Ratio };
+  amount?: Ratio;
   ingredient?: { itemCodeableConcept?: CodeableConcept; itemReference?: Reference; isActive?: boolean; strength?: Ratio }[];
 }
 export interface Ratio { numerator?: Quantity; denominator?: Quantity }
@@ -455,6 +473,18 @@ export interface Coverage extends FhirResourceBase {
   network?: string;
   costToBeneficiary?: { type?: CodeableConcept; valueMoney?: Money; valueQuantity?: Quantity }[];
 }
+export interface CoverageEligibilityRequest extends FhirResourceBase {
+  resourceType: 'CoverageEligibilityRequest';
+  id: string;
+  identifier?: Identifier[];
+  status: 'active' | 'cancelled' | 'draft' | 'entered-in-error';
+  purpose: ('auth-requirements' | 'benefits' | 'discovery' | 'validation')[];
+  patient: Reference;
+  created: string;
+  insurer: Reference;
+  provider?: Reference;
+  insurance?: { focal?: boolean; coverage: Reference }[];
+}
 export interface CoverageEligibilityResponse extends FhirResourceBase {
   resourceType: 'CoverageEligibilityResponse';
   id: string;
@@ -466,7 +496,7 @@ export interface CoverageEligibilityResponse extends FhirResourceBase {
   servicedPeriod?: Period;
   created: string;
   requestor?: Reference;
-  request?: Reference;
+  request: Reference;
   outcome: 'queued' | 'complete' | 'error' | 'partial';
   disposition?: string;
   insurer: Reference;
@@ -654,7 +684,7 @@ export interface MeasureReport extends FhirResourceBase {
 export interface BundleEntry {
   fullUrl?: string;
   resource?: FhirResource;
-  request?: { method: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'; url: string; ifNoneMatch?: string; ifModifiedSince?: string; ifMatch?: string; ifNoneExist?: string };
+  request?: { method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'DELETE' | 'PATCH'; url: string; ifNoneMatch?: string; ifModifiedSince?: string; ifMatch?: string; ifNoneExist?: string };
   response?: { status?: string; location?: string; etag?: string; lastModified?: string; outcome?: unknown };
   search?: { mode?: 'match' | 'include' | 'outcome'; score?: number };
 }
@@ -670,16 +700,86 @@ export interface Bundle extends FhirResourceBase {
   signature?: Signature;
 }
 
-export type FhirResource = Organization | Patient | Practitioner | Location | EpisodeOfCare | ServiceRequest | Encounter | Consent | Provenance | Condition | Procedure | Observation | DiagnosticReport | Medication | MedicationRequest | MedicationDispense | Composition | Appointment | Coverage | CoverageEligibilityResponse | Account | ChargeItem | Claim | ClaimResponse | ExplanationOfBenefit | MeasureReport | Bundle;
+export type FhirResource = Organization | Patient | Practitioner | Location | EpisodeOfCare | ServiceRequest | Encounter | Consent | Provenance | Condition | Procedure | Observation | DiagnosticReport | Medication | MedicationRequest | MedicationDispense | Composition | Appointment | Coverage | CoverageEligibilityRequest | CoverageEligibilityResponse | Account | ChargeItem | Claim | ClaimResponse | ExplanationOfBenefit | MeasureReport | Bundle;
+export type SupportedTopLevelResource = Exclude<FhirResource, CoverageEligibilityRequest | Bundle>;
+export type NormalizedResource<T extends FhirResource> = T & { id: string };
+export type SourceIdentity = { sourceTable: string; sourceKey: string; observedAt?: string };
+export type SourceIdentityMap = Readonly<Record<string, SourceIdentity>>;
+export type ReferenceResolution =
+  | { state: 'resolved'; target: FhirResource; key: string; owner?: string }
+  | { state: 'external'; reference: string }
+  | { state: 'logical'; identifier: Identifier }
+  | { state: 'unresolved'; reference: string }
+  | { state: 'invalid'; reference?: string; reason: string };
+export interface ReferenceIndex { byKey: ReadonlyMap<string, FhirResource>; byFullUrl: ReadonlyMap<string, FhirResource> }
+
 export type FhirResourceType = FhirResource['resourceType'];
 
-export interface ViewDefinitionColumn { name: string; path: string; type?: 'string' | 'integer' | 'decimal' | 'boolean' | 'date' | 'dateTime'; description?: string }
-export interface ViewDefinitionSelect { forEach?: string; forEachOrNull?: string; column?: ViewDefinitionColumn[]; select?: ViewDefinitionSelect[]; unionAll?: ViewDefinitionSelect[] }
-export interface ViewDefinition { resourceType: 'ViewDefinition'; name: string; targetTable: string; resource: FhirResourceType; status: 'active' | 'draft'; implementationStatus: ImplementationStatus; description: string; select: ViewDefinitionSelect[] }
+export interface ViewDefinitionColumn {
+  name: string;
+  path: string;
+  type?: 'string' | 'integer' | 'decimal' | 'boolean' | 'date' | 'dateTime';
+  collection?: boolean;
+  tags?: string[];
+  description?: string;
+}
+export interface ViewDefinitionSelect {
+  forEach?: string;
+  forEachOrNull?: string;
+  column?: ViewDefinitionColumn[];
+  select?: ViewDefinitionSelect[];
+  unionAll?: ViewDefinitionSelect[];
+}
+export interface ViewDefinition {
+  resourceType: 'ViewDefinition';
+  name: string;
+  resource: Exclude<FhirResourceType, 'Bundle' | 'CoverageEligibilityRequest'>;
+  status: 'active' | 'draft';
+  select: ViewDefinitionSelect[];
+  where?: string[];
+  constant?: Record<string, string | number | boolean>;
+  description?: string;
+  /** Local projection metadata; portable SOF-2 consumers should strip these fields. */
+  targetTable?: string;
+  implementationStatus?: ImplementationStatus;
+}
+export interface ProjectionDefinition {
+  view: ViewDefinition;
+  targetTable: string;
+  implementationStatus: 'implemented' | 'partial' | 'not-assessed';
+  sourcePolicy: 'resource' | 'claim-item';
+}
+export type AssessmentState = 'pass' | 'fail' | 'not-assessed';
+export interface AssessmentResult { state: AssessmentState; reason: string; profile?: string; version?: string; environment?: string }
+export type ValidationSource = 'HL7_R4' | 'SATUSEHAT' | 'LAB_POLICY' | 'PROJECTION';
 export type ValidationRuleId = 'FHIR_STD_01_MANDATORY_CARDINALITY' | 'FHIR_STD_02_OBSERVATION_INVARIANT_OBS7' | 'FHIR_STD_03_COMPOSITION_INVARIANT_CMP1' | 'FHIR_STD_04_CLINICAL_TO_CLAIM_EVIDENCE_CHAIN' | 'FHIR_STD_05_FINANCIAL_RECONCILIATION' | 'FHIR_STD_06_BUNDLE_TRANSACTION_BDL3';
-export interface ValidationIssue { ruleId: ValidationRuleId; severity: 'error' | 'warning' | 'information'; resourceType: string; resourceId: string; path: string; message: string; remediation: string }
+
+export interface ValidationIssue {
+  ruleId: ValidationRuleId;
+  severity: 'error' | 'warning' | 'information';
+  resourceType: string;
+  resourceId: string;
+  path: string;
+  message: string;
+  remediation: string;
+  source?: ValidationSource;
+  profile?: string;
+  url?: string;
+  version?: string;
+}
 export interface ValidationRuleResult { ruleId: ValidationRuleId; title: string; description: string; passed: boolean; checkedCount: number; issues: ValidationIssue[] }
-export interface ValidationReport { valid: boolean; timestamp: string; totalResourcesChecked: number; errorCount: number; warningCount: number; rules: ValidationRuleResult[]; issues: ValidationIssue[] }
+export interface ValidationReport {
+  valid: boolean;
+  timestamp: string;
+  totalResourcesChecked: number;
+  errorCount: number;
+  warningCount: number;
+  rules: ValidationRuleResult[];
+  issues: ValidationIssue[];
+  coreR4?: AssessmentResult;
+  labProfile?: AssessmentResult;
+  national?: AssessmentResult;
+}
 
 export interface SandboxClinicalFinancialOverrides {
   encounterStatus?: Encounter['status']; encounterClass?: 'AMB' | 'EMER' | 'IMP'; dischargeDispositionCode?: 'home' | 'other-hcf' | 'aadvice' | 'exp'; primaryDiagnosisCode?: string; secondaryDiagnosisCode?: string; procedureCode?: string; systolicBp?: number; diastolicBp?: number; heartRate?: number; bodyTemp?: number; roomChargeDays?: number; roomUnitPriceIdr?: number; procedurePriceIdr?: number; medicationPriceIdr?: number; adjudicationOutcome?: 'queued' | 'complete' | 'error' | 'partial'; approvedRoomBenefitIdr?: number; approvedProcedureBenefitIdr?: number; approvedMedicationBenefitIdr?: number; addItemBenefitIdr?: number; injectObs7Violation?: boolean; injectCmp1Violation?: boolean; injectBrokenEvidenceChain?: boolean; injectFinancialMismatch?: boolean; injectBundleOrderViolation?: boolean; mergedDuplicatePatient?: boolean;
@@ -687,7 +787,7 @@ export interface SandboxClinicalFinancialOverrides {
 export interface TerminologyDictionary { [domain: string]: { system?: string; concepts?: Record<string, string>; [key: string]: unknown } }
 export type FlattenedTableRows = Record<string, Record<string, unknown>[]>;
 export interface SimrsHospitalSeed { id: string; hospitalCode: string; hospitalName: string; city: string; provinceCode: string; cityCode: string; districtCode: string; villageCode: string; simrsArchitectureStyle: string; scenarioTitle: string; scenarioSummary: string; rawSimrsTables: Record<string, Record<string, unknown>[]>; defaultOverrides: Required<SandboxClinicalFinancialOverrides> }
-export interface NormalizedHospitalDataset { hospitalId: string; hospitalName: string; organization: Organization; payorOrganization: Organization; patient: Patient; duplicateEmergencyPatient?: Patient; practitioner: Practitioner; location: Location; episodeOfCare: EpisodeOfCare; serviceRequest: ServiceRequest; encounter: Encounter; consent: Consent; provenance: Provenance; conditions: Condition[]; procedures: Procedure[]; observations: Observation[]; diagnosticReport: DiagnosticReport; medication: Medication; medicationRequest: MedicationRequest; medicationDispense: MedicationDispense; composition: Composition; appointment: Appointment; coverage: Coverage; coverageEligibilityResponse: CoverageEligibilityResponse; account: Account; chargeItems: ChargeItem[]; claim: Claim; claimResponse: ClaimResponse; explanationOfBenefit: ExplanationOfBenefit; measureReport: MeasureReport; transactionBundle: Bundle; allResources: FhirResource[] }
+export interface NormalizedHospitalDataset { hospitalId: string; hospitalName: string; organization: Organization; payorOrganization: Organization; patient: Patient; duplicateEmergencyPatient?: Patient; practitioner: Practitioner; location: Location; episodeOfCare: EpisodeOfCare; serviceRequest: ServiceRequest; encounter: Encounter; consent: Consent; provenance: Provenance; conditions: Condition[]; procedures: Procedure[]; observations: Observation[]; diagnosticReport: DiagnosticReport; medication: Medication; medicationRequest: MedicationRequest; medicationDispense: MedicationDispense; composition: Composition; appointment: Appointment; coverage: Coverage; coverageEligibilityResponse: CoverageEligibilityResponse; account: Account; chargeItems: ChargeItem[]; claim: Claim; claimResponse: ClaimResponse; explanationOfBenefit: ExplanationOfBenefit; measureReport: MeasureReport; transactionBundle: Bundle; allResources: SupportedTopLevelResource[]; resources?: readonly SupportedTopLevelResource[]; contained?: readonly CoverageEligibilityRequest[]; graphRevision?: string; sourceMap?: SourceIdentityMap }
 export interface FlattenedDatasetResult { hospitalId: string; tables: Record<string, Record<string, unknown>[]> }
 export interface SqlQueryExecutionResult { columns: string[]; rows: Record<string, unknown>[]; rowCount: number; executionTimeMs: number; error?: string }
 export interface TableMetadataItem { tableName: string; kind: 'table' | 'view'; resourceType: string; level: string; implementationStatus: ImplementationStatus; description: string }

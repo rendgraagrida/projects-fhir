@@ -1,8 +1,15 @@
 import type {
-  Account, Address, Appointment, Bundle, BundleEntry, ChargeItem, Claim, ClaimItem, ClaimResponse, CodeableConcept, Composition, Condition, Consent, Coverage, CoverageEligibilityResponse, DiagnosticReport, Encounter, EpisodeOfCare, ExplanationOfBenefit, FhirResource, HumanName, Location, MeasureReport, Medication, MedicationDispense, MedicationRequest, Money, NormalizedHospitalDataset, Observation, Organization, Patient, Practitioner, Procedure, Provenance, Reference, ServiceRequest, SimpleQuantity, SandboxClinicalFinancialOverrides
+  Account, Address, Appointment, Bundle, BundleEntry, ChargeItem, Claim, ClaimItem, ClaimResponse, CodeableConcept, Composition, Condition, Consent, Coverage, CoverageEligibilityRequest, CoverageEligibilityResponse, DiagnosticReport, Encounter, EpisodeOfCare, ExplanationOfBenefit, FhirResource, HumanName, Location, MeasureReport, Medication, MedicationDispense, MedicationRequest, Money, NormalizedHospitalDataset, Observation, Organization, Patient, Practitioner, Procedure, Provenance, Reference, ReferenceIndex, ReferenceResolution, ServiceRequest, SimpleQuantity, SandboxClinicalFinancialOverrides, SupportedTopLevelResource
 } from '../types/fhir-global';
 import { STANDARD_TERMINOLOGY_DICTIONARY } from '../data/simrs-normalization-seeds';
 import type { SimrsHospitalSeed } from '../types/fhir-global';
+export class NormalizationError extends Error {
+  constructor(message: string, readonly path?: string) {
+    super(message);
+    this.name = 'NormalizationError';
+  }
+}
+
 
 const coding = (system: string, code: string, display?: string) => ({ system, code, display });
 const concept = (system: string, code: string, display?: string): CodeableConcept => ({ coding: [coding(system, code, display)] });
@@ -46,10 +53,18 @@ const findValue = (row: Record<string, unknown>, keys: string[], fallback: strin
   for (const key of keys) { const value = row[key]; if (typeof value === 'string' && value.length > 0) return value; if (typeof value === 'number') return String(value); }
   return fallback;
 };
-const dateValue = (row: Record<string, unknown>, keys: string[], fallback: string): string => findValue(row, keys, fallback);
-const amount = (v: number | undefined, fallback: number): number => {
-  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return fallback;
-  return Math.min(v, 1_000_000_000_000);
+const dateValue = (row: Record<string, unknown>, keys: string[], fallback: string): string => {
+  const value = findValue(row, keys, fallback);
+  if (!/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(value) || Number.isNaN(Date.parse(value))) {
+    throw new NormalizationError(`Tanggal tidak valid: ${value}.`, keys[0]);
+  }
+  return value;
+};
+const amount = (v: number | undefined, fallback: number, path = 'amount'): number => {
+  if (v === undefined) return fallback;
+  if (!Number.isFinite(v) || v < 0) throw new NormalizationError(`Nilai finansial tidak valid: ${String(v)}.`, path);
+  if (v > 1_000_000_000_000) throw new NormalizationError('Nilai finansial melebihi batas aman.', path);
+  return v;
 };
 
 export function sortBundleEntriesForTransaction(entries: BundleEntry[]): BundleEntry[] {
@@ -90,6 +105,35 @@ export function resolveTransactionBundleUrns(bundle: Bundle): Bundle {
   });
   return { ...bundle, entry: resolvedEntries };
 }
+export function buildReferenceIndex(resources: readonly FhirResource[], bundle?: Bundle): ReferenceIndex {
+  const byKey = new Map<string, FhirResource>();
+  const byFullUrl = new Map<string, FhirResource>();
+  for (const resource of resources) if (resource.id) byKey.set(`${resource.resourceType}/${resource.id}`, resource);
+  for (const entry of bundle?.entry ?? []) {
+    if (entry.resource?.id) byKey.set(`${entry.resource.resourceType}/${entry.resource.id}`, entry.resource);
+    if (entry.fullUrl && entry.resource) byFullUrl.set(entry.fullUrl, entry.resource);
+  }
+  return { byKey, byFullUrl };
+}
+
+export function resolveReference(reference: Reference, owner: FhirResource, index: ReferenceIndex, expectedTypes: readonly string[] = []): ReferenceResolution {
+  if (reference.identifier && !reference.reference) return { state: 'logical', identifier: reference.identifier };
+  const value = reference.reference;
+  if (!value) return { state: 'invalid', reason: 'Reference requires reference or identifier.' };
+  if (value.startsWith('#')) {
+    const target = owner.contained?.find(resource => `#${resource.id}` === value);
+    if (!target) return { state: 'unresolved', reference: value };
+    if (expectedTypes.length && !expectedTypes.includes(target.resourceType)) return { state: 'invalid', reference: value, reason: 'Contained reference has an unexpected resource type.' };
+    return { state: 'resolved', target, key: `${target.resourceType}/${target.id}`, owner: `${owner.resourceType}/${owner.id}` };
+  }
+  const directKey = value.match(/(?:^|\/)([A-Z][A-Za-z]+)\/([^/]+)$/);
+  const key = directKey ? `${directKey[1]}/${directKey[2]}` : undefined;
+  const target = index.byFullUrl.get(value) ?? (key ? index.byKey.get(key) : undefined);
+  if (!target) return /^https?:\/\//.test(value) ? { state: 'external', reference: value } : { state: 'unresolved', reference: value };
+  if (expectedTypes.length && !expectedTypes.includes(target.resourceType)) return { state: 'invalid', reference: value, reason: 'Reference has an unexpected resource type.' };
+  return { state: 'resolved', target, key: `${target.resourceType}/${target.id}` };
+}
+
 
 export function normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides: Partial<SandboxClinicalFinancialOverrides> = {}): NormalizedHospitalDataset {
   const o = { ...seed.defaultOverrides, ...overrides };
@@ -127,13 +171,13 @@ export function normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides: Partial
   const genderRaw = findValue(baseRow, ['jenis_kelamin', 'gender', 'sex'], 'unknown').toLowerCase();
   const gender: Patient['gender'] = genderRaw === 'l' || genderRaw === 'male' ? 'male' : genderRaw === 'p' || genderRaw === 'f' || genderRaw === 'female' ? 'female' : 'unknown';
   const birthDate = findValue(baseRow, ['tanggal_lahir', 'birthDate', 'dob'], '1980-01-01');
-  const primaryCode = o.primaryDiagnosisCode || 'J18.9';
-  const secondaryCode = o.secondaryDiagnosisCode || 'E11.9';
-  const procedureCode = o.procedureCode || '96.71';
+  const primaryCode = o.primaryDiagnosisCode ?? findValue(baseRow, ['kode_diagnosa_utama', 'primaryCode', 'primary_code', 'dx_primary'], 'J18.9');
+  const secondaryCode = o.secondaryDiagnosisCode ?? findValue(baseRow, ['kode_diagnosa_sekunder', 'secondaryCode', 'secondary_code', 'dx_secondary'], 'E11.9');
+  const procedureCode = o.procedureCode ?? findValue(baseRow, ['kode_tindakan', 'procedureCode', 'procedure_code'], '96.71');
   const roomName = findValue(baseRow, ['kode_ruang', 'room', 'room_code'], 'WARD-01');
-  const addresses = (): Address[] => [
+  const addresses = (use: 'home' | 'work'): Address[] => [
     {
-      use: 'home',
+      use,
       type: 'both',
       city: seed.city,
       state: seed.provinceCode,
@@ -155,8 +199,11 @@ export function normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides: Partial
       ],
     },
   ];
-  const organization: Organization = { resourceType: 'Organization', id: orgId, identifier: [identifier('http://sys-ids.kemkes.go.id/organization', seed.hospitalCode, 'official')], active: true, type: [concept('http://terminology.hl7.org/CodeSystem/organization-type', 'prov', 'Healthcare Provider')], name: seed.hospitalName, address: addresses() };
-  const payorOrganization: Organization = { resourceType: 'Organization', id: payorId, identifier: [identifier('http://bpjs-kesehatan.go.id/id', `BPJS-${seed.hospitalCode}`, 'official')], active: true, type: [concept('http://terminology.hl7.org/CodeSystem/organization-type', 'ins', 'Insurance')], name: `Penjamin ${seed.hospitalName}`, address: addresses() };
+  const rawPayorType = findValue(baseRow, ['payor_type', 'payerType', 'coverage_type'], seed.id === 'rs-harapan-bangsa-jakarta' ? 'commercial' : 'public');
+  const commercialPayor = rawPayorType === 'commercial';
+  const payorName = findValue(baseRow, ['payor_name', 'payerName'], commercialPayor ? 'PT Asuransi Kesehatan Sejahtera' : `Penjamin ${seed.hospitalName}`);
+  const organization: Organization = { resourceType: 'Organization', id: orgId, identifier: [identifier('http://sys-ids.kemkes.go.id/organization', seed.hospitalCode, 'official')], active: true, type: [concept('http://terminology.hl7.org/CodeSystem/organization-type', 'prov', 'Healthcare Provider')], name: seed.hospitalName, address: addresses('work') };
+  const payorOrganization: Organization = { resourceType: 'Organization', id: payorId, identifier: [commercialPayor ? identifier('https://example.org/fhir/insurance-organization', 'COMM-INS-001', 'official') : identifier('http://bpjs-kesehatan.go.id/id', `BPJS-${seed.hospitalCode}`, 'official')], active: true, type: [concept('http://terminology.hl7.org/CodeSystem/organization-type', 'ins', 'Insurance')], name: payorName, address: addresses('work') };
   const patient: Patient = {
     resourceType: 'Patient',
     id: patientId,
@@ -170,7 +217,7 @@ export function normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides: Partial
     name: [{ use: 'official', text: fullName, family: fullName.split(' ').slice(-1)[0], given: fullName.split(' ').slice(0, -1) }],
     gender,
     birthDate,
-    address: addresses(),
+    address: addresses('home'),
     managingOrganization: ref('Organization', orgId),
   };
   let duplicateEmergencyPatient: Patient | undefined;
@@ -185,11 +232,12 @@ export function normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides: Partial
   }
   const practitioner: Practitioner = { resourceType: 'Practitioner', id: practitionerId, identifier: [identifier('https://fhir.kemkes.go.id/id/ihs-number', `PRACT-${seed.hospitalCode}`, 'official')], active: true, name: [{ use: 'official', text: 'dr. Andi Pratama', family: 'Pratama', given: ['Andi'] }], qualification: [{ code: concept('http://snomed.info/sct', '309343006', 'Physician') }] };
   const location: Location = { resourceType: 'Location', id: locationId, identifier: [identifier(`http://sys-ids.kemkes.go.id/location/${seed.hospitalCode}`, roomName, 'official')], status: 'active', name: roomName, mode: 'instance', physicalType: concept('http://terminology.hl7.org/CodeSystem/location-physical-type', 'ro', 'Room'), managingOrganization: ref('Organization', orgId) };
-  const episodeOfCare: EpisodeOfCare = { resourceType: 'EpisodeOfCare', id: episodeId, identifier: [identifier(`http://sys-ids.kemkes.go.id/episode-of-care/${seed.hospitalCode}`, `EOC-${seed.hospitalCode}`)], status: 'finished', type: [concept('http://terminology.hl7.org/CodeSystem/episodeofcare-type', 'hacc', 'Hospital Care')], patient: ref('Patient', patientId), managingOrganization: ref('Organization', orgId), period: { start, end } };
+  const episodeOfCare: EpisodeOfCare = { resourceType: 'EpisodeOfCare', id: episodeId, identifier: [identifier(`http://sys-ids.kemkes.go.id/episode-of-care/${seed.hospitalCode}`, `EOC-${seed.hospitalCode}`)], status: 'finished', patient: ref('Patient', patientId), managingOrganization: ref('Organization', orgId), period: { start, end } };
   const procedureDisplay = STANDARD_TERMINOLOGY_DICTIONARY.ICD9CM.concepts[procedureCode as keyof typeof STANDARD_TERMINOLOGY_DICTIONARY.ICD9CM.concepts] ?? procedureCode;
   const serviceRequest: ServiceRequest = { resourceType: 'ServiceRequest', id: serviceRequestId, identifier: [identifier(`http://sys-ids.kemkes.go.id/servicerequest/${seed.hospitalCode}`, `SR-${seed.hospitalCode}`)], status: 'completed', intent: 'order', category: [concept('http://snomed.info/sct', '386053000', 'Evaluation procedure')], priority: 'routine', code: concept('http://hl7.org/fhir/sid/icd-9-cm', procedureCode, procedureDisplay), subject: ref('Patient', patientId), encounter: ref('Encounter', encounterId), authoredOn: start, requester: ref('Practitioner', practitionerId), performer: [ref('Organization', orgId)] };
-  const encounterClass = o.encounterClass || 'IMP';
-  const encounter: Encounter = { resourceType: 'Encounter', id: encounterId, identifier: [identifier(`http://sys-ids.kemkes.go.id/encounter/${seed.hospitalCode}`, `ENC-${seed.hospitalCode}`, 'official')], status: o.encounterStatus || 'finished', class: coding('http://terminology.hl7.org/CodeSystem/v3-ActCode', encounterClass, encounterClass === 'EMER' ? 'emergency' : encounterClass === 'IMP' ? 'inpatient encounter' : 'ambulatory'), serviceType: concept('http://terminology.hl7.org/CodeSystem/service-type', encounterClass === 'EMER' ? '57' : '124', encounterClass === 'EMER' ? 'Emergency Medical' : 'General Medical'), subject: ref('Patient', patientId), episodeOfCare: [ref('EpisodeOfCare', episodeId)], basedOn: [ref('ServiceRequest', serviceRequestId)], period: { start, end }, participant: [{ individual: ref('Practitioner', practitionerId), type: [concept('http://terminology.hl7.org/CodeSystem/v3-ParticipationType', 'ATND', 'Attender')] }], location: [{ location: ref('Location', locationId), status: 'completed', period: { start, end } }], hospitalization: { dischargeDisposition: concept('http://terminology.hl7.org/CodeSystem/discharge-disposition', o.dischargeDispositionCode || 'home') }, serviceProvider: ref('Organization', orgId) };
+  const encounterClass = Object.prototype.hasOwnProperty.call(overrides, 'encounterClass') ? overrides.encounterClass ?? 'IMP' : findValue(baseRow, ['kelas', 'encounterClass', 'encounter_class'], o.encounterClass || 'IMP');
+  const encounterStatus = Object.prototype.hasOwnProperty.call(overrides, 'encounterStatus') ? overrides.encounterStatus ?? 'finished' : findValue(baseRow, ['status', 'encounterStatus', 'encounter_status', 'state'], o.encounterStatus || 'finished') as Encounter['status'];
+  const encounter: Encounter = { resourceType: 'Encounter', id: encounterId, identifier: [identifier(`http://sys-ids.kemkes.go.id/encounter/${seed.hospitalCode}`, `ENC-${seed.hospitalCode}`, 'official')], status: encounterStatus, class: coding('http://terminology.hl7.org/CodeSystem/v3-ActCode', encounterClass, encounterClass === 'EMER' ? 'emergency' : encounterClass === 'IMP' ? 'inpatient encounter' : 'ambulatory'), serviceType: concept('http://terminology.hl7.org/CodeSystem/service-type', encounterClass === 'EMER' ? '57' : '124', encounterClass === 'EMER' ? 'Emergency Medical' : 'General Medical'), subject: ref('Patient', patientId), episodeOfCare: [ref('EpisodeOfCare', episodeId)], basedOn: [ref('ServiceRequest', serviceRequestId)], period: { start, end }, participant: [{ individual: ref('Practitioner', practitionerId), type: [concept('http://terminology.hl7.org/CodeSystem/v3-ParticipationType', 'ATND', 'Attender')] }], location: [{ location: ref('Location', locationId), status: 'completed', period: { start, end } }], hospitalization: { dischargeDisposition: concept('http://terminology.hl7.org/CodeSystem/discharge-disposition', o.dischargeDispositionCode || 'home') }, serviceProvider: ref('Organization', orgId) };
   const conditions: Condition[] = [
     { resourceType: 'Condition', id: `condition-${seed.id}-primary`, clinicalStatus: concept('http://terminology.hl7.org/CodeSystem/condition-clinical', 'active'), verificationStatus: concept('http://terminology.hl7.org/CodeSystem/condition-ver-status', 'confirmed'), category: [concept('http://terminology.hl7.org/CodeSystem/condition-category', 'encounter-diagnosis')], code: concept(STANDARD_TERMINOLOGY_DICTIONARY.ICD10.system, primaryCode, STANDARD_TERMINOLOGY_DICTIONARY.ICD10.concepts[primaryCode as keyof typeof STANDARD_TERMINOLOGY_DICTIONARY.ICD10.concepts] ?? primaryCode), subject: ref('Patient', patientId), encounter: ref('Encounter', encounterId), recordedDate: start },
     { resourceType: 'Condition', id: `condition-${seed.id}-secondary`, clinicalStatus: concept('http://terminology.hl7.org/CodeSystem/condition-clinical', 'active'), verificationStatus: concept('http://terminology.hl7.org/CodeSystem/condition-ver-status', 'confirmed'), category: [concept('http://terminology.hl7.org/CodeSystem/condition-category', 'encounter-diagnosis')], code: concept(STANDARD_TERMINOLOGY_DICTIONARY.ICD10.system, secondaryCode, STANDARD_TERMINOLOGY_DICTIONARY.ICD10.concepts[secondaryCode as keyof typeof STANDARD_TERMINOLOGY_DICTIONARY.ICD10.concepts] ?? secondaryCode), subject: ref('Patient', patientId), encounter: ref('Encounter', encounterId), recordedDate: start }
@@ -210,21 +258,22 @@ export function normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides: Partial
   const medication: Medication = {
     resourceType: 'Medication',
     id: medicationId,
-    extension: [{ url: 'https://fhir.kemkes.go.id/r4/StructureDefinition/MedicationType', valueCoding: coding('http://terminology.kemkes.go.id/CodeSystem/medication-type', 'NC', 'Non-compound') }],
+    extension: [{ url: 'https://fhir.kemkes.go.id/r4/StructureDefinition/MedicationType', valueCodeableConcept: concept('https://terminology.kemkes.go.id/CodeSystem/medication-type', 'NC', 'Non-compound') }],
     code: concept(STANDARD_TERMINOLOGY_DICTIONARY.KFA.system, kfaCode, kfaDisplay),
     status: 'active',
     form: concept('http://snomed.info/sct', '385055001', 'Tablet'),
   };
   const medicationRequest: MedicationRequest = { resourceType: 'MedicationRequest', id: medicationRequestId, status: 'completed', intent: 'order', category: [concept('http://terminology.hl7.org/CodeSystem/medicationrequest-category', 'inpatient', 'Inpatient')], medicationReference: ref('Medication', medicationId), subject: ref('Patient', patientId), encounter: ref('Encounter', encounterId), authoredOn: start, requester: ref('Practitioner', practitionerId), dosageInstruction: [{ text: '1 tablet setiap 8 jam' }], dispenseRequest: { quantity: { value: 9, unit: 'tablet', system: 'http://unitsofmeasure.org', code: '{tbl}' } } };
   const dispenseQuantity: SimpleQuantity = { value: 9, unit: 'tablet', system: 'http://unitsofmeasure.org', code: '{tbl}' };
-  const medicationDispense: MedicationDispense = { resourceType: 'MedicationDispense', id: medicationDispenseId, status: 'completed', medicationReference: ref('Medication', medicationId), subject: ref('Patient', patientId), context: ref('Encounter', encounterId), authorizingPrescription: [ref('MedicationRequest', medicationRequestId)], quantity: dispenseQuantity, daysSupply: { value: o.roomChargeDays || 3, unit: 'd', system: 'http://unitsofmeasure.org', code: 'd' }, whenHandedOver: end };
+  const medicationDispense: MedicationDispense = { resourceType: 'MedicationDispense', id: medicationDispenseId, status: 'completed', medicationReference: ref('Medication', medicationId), subject: ref('Patient', patientId), context: ref('Encounter', encounterId), authorizingPrescription: [ref('MedicationRequest', medicationRequestId)], quantity: dispenseQuantity, daysSupply: { value: amount(o.roomChargeDays, 3, 'daysSupply'), unit: 'd', system: 'http://unitsofmeasure.org', code: 'd' }, whenHandedOver: end };
   const section = (title: string, code: string, resources: FhirResource[], text: string): Composition['section'][number] => { const result: Composition['section'][number] = { title, code: concept('http://loinc.org', code, title), entry: resources.map(resource => ref(resource.resourceType, resource.id)), text: { status: 'generated', div: `<div xmlns="http://www.w3.org/1999/xhtml">${text}</div>` } }; if (o.injectCmp1Violation) { delete result.entry; delete result.text; } return result; };
   const composition: Composition = { resourceType: 'Composition', id: compositionId, status: 'final', type: concept('http://loinc.org', '18842-5', 'Discharge summary'), subject: ref('Patient', patientId), encounter: ref('Encounter', encounterId), date: end, author: [ref('Practitioner', practitionerId)], title: 'Resume Medis Pulang', section: [section('Diagnosis', '11535-2', conditions, 'Diagnosis klinis'), section('Procedures', '29554-3', procedures, 'Tindakan medis'), section('Observations', '61150-9', observations, 'Hasil pengamatan'), section('Medications', '19009-0', [medication, medicationRequest, medicationDispense], 'Terapi obat'), section('Disposition', '8653-8', [encounter], 'Disposisi pasien')] };
   const appointment: Appointment = { resourceType: 'Appointment', id: appointmentId, status: 'fulfilled', serviceCategory: [concept('http://terminology.hl7.org/CodeSystem/service-category', '17', 'General Practice')], start, end, created: start, participant: [{ actor: ref('Patient', patientId), status: 'accepted', required: 'required' }, { actor: ref('Practitioner', practitionerId), status: 'accepted', required: 'required' }, { actor: ref('Location', locationId), status: 'accepted', required: 'required' }] };
-  const coverage: Coverage = { resourceType: 'Coverage', id: coverageId, status: 'active', identifier: [identifier('http://bpjs-kesehatan.go.id/id/kartu', `000${seed.provinceCode}${seed.hospitalCode}`)], type: concept('http://terminology.hl7.org/CodeSystem/v3-ActCode', 'PUBLICPOL', 'Public healthcare'), subscriberId: `SUB-${seed.hospitalCode}`, beneficiary: ref('Patient', patientId), subscriber: ref('Patient', patientId), payor: [ref('Organization', payorId, `Penjamin ${seed.hospitalName}`)], class: [{ type: concept('http://terminology.hl7.org/CodeSystem/coverage-class', 'plan'), value: 'JKN-Kelas-1', name: 'JKN Kelas 1' }], period: { start: '2026-01-01', end: '2026-12-31' } };
-  const coverageEligibilityResponse: CoverageEligibilityResponse = { resourceType: 'CoverageEligibilityResponse', id: eligibilityId, status: 'active', purpose: ['validation', 'benefits'], patient: ref('Patient', patientId), created: now, requestor: ref('Organization', orgId), request: ref('Coverage', coverageId), outcome: o.adjudicationOutcome || 'complete', insurer: ref('Organization', payorId), disposition: 'Coverage aktif dan memenuhi syarat', insurance: [{ coverage: ref('Coverage', coverageId), inforce: true }] };
+  const coverage: Coverage = { resourceType: 'Coverage', id: coverageId, status: 'active', identifier: [commercialPayor ? identifier('https://example.org/fhir/insurance-policy', `POL-${seed.hospitalCode}`) : identifier('http://bpjs-kesehatan.go.id/id/kartu', `000${seed.provinceCode}${seed.hospitalCode}`)], type: commercialPayor ? concept('http://terminology.hl7.org/CodeSystem/v3-ActCode', 'EHCPOL', 'extended healthcare') : concept('http://terminology.hl7.org/CodeSystem/v3-ActCode', 'PUBLICPOL', 'Public healthcare'), subscriberId: `SUB-${seed.hospitalCode}`, beneficiary: ref('Patient', patientId), subscriber: ref('Patient', patientId), payor: [ref('Organization', payorId, payorName)], class: [{ type: concept('http://terminology.hl7.org/CodeSystem/coverage-class', 'plan'), value: commercialPayor ? 'COMMERCIAL' : 'JKN-Kelas-1', name: commercialPayor ? 'Asuransi komersial' : 'JKN Kelas 1' }], period: { start: '2026-01-01', end: '2026-12-31' } };
+  const containedRequest: CoverageEligibilityRequest = { resourceType: 'CoverageEligibilityRequest', id: 'eligibility-request', status: 'active', purpose: ['validation', 'benefits'], patient: ref('Patient', patientId), created: now, insurer: ref('Organization', payorId), insurance: [{ focal: true, coverage: ref('Coverage', coverageId) }] };
+  const coverageEligibilityResponse: CoverageEligibilityResponse = { resourceType: 'CoverageEligibilityResponse', id: eligibilityId, contained: [containedRequest], status: 'active', purpose: ['validation', 'benefits'], patient: ref('Patient', patientId), created: now, requestor: ref('Organization', orgId), request: { reference: '#eligibility-request' }, outcome: o.adjudicationOutcome || 'complete', insurer: ref('Organization', payorId), disposition: 'Coverage aktif dan memenuhi syarat', insurance: [{ coverage: ref('Coverage', coverageId), inforce: true }] };
   const account: Account = { resourceType: 'Account', id: accountId, status: 'active', type: concept('http://terminology.hl7.org/CodeSystem/v3-ActCode', 'PBILL'), name: `Tagihan ${fullName}`, subject: [ref('Patient', patientId)], owner: ref('Organization', orgId), servicePeriod: { start, end }, coverage: [{ coverage: ref('Coverage', coverageId), priority: 1 }] };
-  const roomPrice = amount(o.roomUnitPriceIdr, 750000); const procedurePrice = amount(o.procedurePriceIdr, 2500000); const medicationPrice = amount(o.medicationPriceIdr, 125000); const days = amount(o.roomChargeDays, 3); const roomTotal = roomPrice * days;
+  const roomPrice = amount(o.roomUnitPriceIdr, 750000, 'roomUnitPriceIdr'); const procedurePrice = amount(o.procedurePriceIdr, 2500000, 'procedurePriceIdr'); const medicationPrice = amount(o.medicationPriceIdr, 125000, 'medicationPriceIdr'); const days = amount(o.roomChargeDays, 3, 'roomChargeDays'); const roomTotal = roomPrice * days; if (!Number.isFinite(roomTotal) || roomTotal < 0 || roomTotal > 1_000_000_000_000) throw new NormalizationError('Total ChargeItem tidak finite atau melebihi batas aman.', 'roomTotal');
   const chargeItems: ChargeItem[] = [
     { resourceType: 'ChargeItem', id: `charge-item-${seed.id}-room`, status: 'billed', code: concept('http://terminology.hl7.org/CodeSystem/ex-USCLS', 'ROOM-INPATIENT', `Akomodasi Kamar Rawat (${roomName})`), subject: ref('Patient', patientId), context: ref('Encounter', encounterId), performingOrganization: ref('Organization', orgId), quantity: quantity(days, 'd'), priceOverride: money(roomTotal), account: [ref('Account', accountId)], supportingInformation: [ref('Encounter', encounterId)] },
     { resourceType: 'ChargeItem', id: `charge-item-${seed.id}-procedure`, status: 'billed', code: concept(STANDARD_TERMINOLOGY_DICTIONARY.ICD9CM.system, procedureCode, procedureDisplay), subject: ref('Patient', patientId), context: ref('Encounter', encounterId), performingOrganization: ref('Organization', orgId), quantity: quantity(1, '1'), priceOverride: money(procedurePrice), account: [ref('Account', accountId)], supportingInformation: [ref('Procedure', procedureId)] },
@@ -254,12 +303,13 @@ export function normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides: Partial
   if (o.injectBrokenEvidenceChain && claim.diagnosis[0].diagnosisReference) claim.diagnosis[0].diagnosisReference = ref('Condition', 'condition-missing');
   const approvedTotal = amount(o.approvedRoomBenefitIdr, roomTotal) + amount(o.approvedProcedureBenefitIdr, procedurePrice) + amount(o.approvedMedicationBenefitIdr, medicationPrice);
   const addBenefit = amount(o.addItemBenefitIdr, 0);
-  const claimResponse: ClaimResponse = { resourceType: 'ClaimResponse', id: responseId, status: 'active', type: claim.type, subType: claim.subType, use: 'claim', patient: ref('Patient', patientId), created: now, insurer: ref('Organization', payorId), request: ref('Claim', claimId), outcome: o.adjudicationOutcome || 'complete', disposition: 'Klaim diproses oleh penjamin', total: [{ category: concept('http://terminology.hl7.org/CodeSystem/adjudication', 'submitted'), amount: money(submittedTotal) }, { category: concept('http://terminology.hl7.org/CodeSystem/adjudication', 'benefit'), amount: money(approvedTotal) }], addItem: addBenefit > 0 ? [{ productOrService: concept('http://terminology.hl7.org/CodeSystem/ex-benefitcategory', 'additional'), net: money(addBenefit), adjudication: [{ category: concept('http://terminology.hl7.org/CodeSystem/adjudication', 'benefit'), amount: money(addBenefit) }] }] : [], processNote: [{ type: 'display', text: 'Klaim berhasil diverifikasi.' }] };
+  const adjudicationOutcome = Object.prototype.hasOwnProperty.call(overrides, 'adjudicationOutcome') ? overrides.adjudicationOutcome ?? 'complete' : findValue(baseRow, ['status_klaim', 'adjudication', 'hasil'], o.adjudicationOutcome || 'complete') as ClaimResponse['outcome'];
+  const claimResponse: ClaimResponse = { resourceType: 'ClaimResponse', id: responseId, status: 'active', type: claim.type, subType: claim.subType, use: 'claim', patient: ref('Patient', patientId), created: now, insurer: ref('Organization', payorId), request: ref('Claim', claimId), outcome: adjudicationOutcome, disposition: 'Klaim diproses oleh penjamin', total: [{ category: concept('http://terminology.hl7.org/CodeSystem/adjudication', 'submitted'), amount: money(submittedTotal) }, { category: concept('http://terminology.hl7.org/CodeSystem/adjudication', 'benefit'), amount: money(approvedTotal) }], addItem: addBenefit > 0 ? [{ productOrService: concept('http://terminology.hl7.org/CodeSystem/ex-benefitcategory', 'additional'), net: money(addBenefit), adjudication: [{ category: concept('http://terminology.hl7.org/CodeSystem/adjudication', 'benefit'), amount: money(addBenefit) }] }] : [], processNote: [{ type: 'display', text: 'Klaim berhasil diverifikasi.' }] };
   const explanationOfBenefit: ExplanationOfBenefit = { resourceType: 'ExplanationOfBenefit', id: eobId, status: 'active', type: claim.type, subType: claim.subType, use: 'claim', patient: ref('Patient', patientId), created: now, insurer: ref('Organization', payorId), provider: ref('Organization', orgId), priority: claim.priority, claim: ref('Claim', claimId), claimResponse: ref('ClaimResponse', responseId), outcome: claimResponse.outcome, disposition: claimResponse.disposition, insurance: [{ focal: true, coverage: ref('Coverage', coverageId) }], total: [{ category: concept('http://terminology.hl7.org/CodeSystem/adjudication', 'submitted'), amount: money(submittedTotal) }, { category: concept('http://terminology.hl7.org/CodeSystem/adjudication', 'benefit'), amount: money(approvedTotal) }] };
   const measureReport: MeasureReport = { resourceType: 'MeasureReport', id: measureId, status: 'complete', type: 'individual', measure: 'https://example.org/fhir/Measure/inpatient-evidence-completeness', subject: ref('Patient', patientId), date: now, reporter: ref('Organization', orgId), period: { start, end }, group: [{ population: [{ code: concept('http://terminology.hl7.org/CodeSystem/measure-population', 'initial-population'), count: 1 }, { code: concept('http://terminology.hl7.org/CodeSystem/measure-population', 'denominator'), count: 1 }, { code: concept('http://terminology.hl7.org/CodeSystem/measure-population', 'numerator'), count: 1 }], measureScore: quantity(1, '1') }], evaluatedResource: [ref('Encounter', encounterId), ref('Claim', claimId)] };
-  const consent: Consent = { resourceType: 'Consent', id: consentId, status: 'active', scope: concept('http://terminology.hl7.org/CodeSystem/consentscope', 'patient-privacy'), category: [concept('http://terminology.hl7.org/CodeSystem/consentcategory', '64292-6', 'Privacy policy')], patient: ref('Patient', patientId), dateTime: now, organization: [ref('Organization', orgId)], provision: { type: 'permit', period: { start, end } } };
+  const consent: Consent = { resourceType: 'Consent', id: consentId, status: 'active', scope: concept('http://terminology.hl7.org/CodeSystem/consentscope', 'patient-privacy'), category: [concept('http://loinc.org', '64292-6', 'Privacy policy')], policyRule: concept('http://terminology.hl7.org/CodeSystem/v3-ActCode', 'OPTIN', 'Opt-in'), patient: ref('Patient', patientId), dateTime: now, organization: [ref('Organization', orgId)], provision: { type: 'permit', period: { start, end } } };
   const provenance: Provenance = { resourceType: 'Provenance', id: provenanceId, target: [ref('Encounter', encounterId), ref('Claim', claimId)], recorded: now, activity: concept('http://terminology.hl7.org/CodeSystem/v3-DataOperation', 'CREATE'), agent: [{ who: ref('Practitioner', practitionerId), type: concept('http://terminology.hl7.org/CodeSystem/provenance-participant-type', 'author') }], signature: [{ type: [coding('urn:iso-astm:E1762-95:2013', '1.2.840.10065.1.12.1.1', "Author's Signature")], when: now, who: ref('Practitioner', practitionerId) }] };
-  const concreteResources: FhirResource[] = [organization, payorOrganization, patient, ...(duplicateEmergencyPatient ? [duplicateEmergencyPatient] : []), practitioner, location, episodeOfCare, serviceRequest, encounter, consent, provenance, ...conditions, ...procedures, ...observations, diagnosticReport, medication, medicationRequest, medicationDispense, composition, appointment, coverage, coverageEligibilityResponse, account, ...chargeItems, claim, claimResponse, explanationOfBenefit, measureReport];
+  const concreteResources: SupportedTopLevelResource[] = [organization, payorOrganization, patient, ...(duplicateEmergencyPatient ? [duplicateEmergencyPatient] : []), practitioner, location, episodeOfCare, serviceRequest, encounter, consent, provenance, ...conditions, ...procedures, ...observations, diagnosticReport, medication, medicationRequest, medicationDispense, composition, appointment, coverage, coverageEligibilityResponse, account, ...chargeItems, claim, claimResponse, explanationOfBenefit, measureReport];
   const methods: Array<'GET' | 'POST' | 'PUT' | 'DELETE'> = concreteResources.map((_, index) => index === concreteResources.length - 1 ? 'PUT' : 'POST');
   if (o.injectBundleOrderViolation && methods.length > 2) {
     const last = methods.length - 1;
@@ -275,11 +325,11 @@ export function normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides: Partial
       resource,
       request: {
         method: methods[index],
-        url: `${resource.resourceType}/${resource.id}`,
+        url: methods[index] === 'POST' ? resource.resourceType : `${resource.resourceType}/${resource.id}`,
       },
     })),
   };
   const sortedBundle = o.injectBundleOrderViolation ? transactionBundle : { ...transactionBundle, entry: sortBundleEntriesForTransaction(transactionBundle.entry ?? []) };
   const resolvedBundle = resolveTransactionBundleUrns(sortedBundle);
-  return { hospitalId: seed.id, hospitalName: seed.hospitalName, organization, payorOrganization, patient, duplicateEmergencyPatient, practitioner, location, episodeOfCare, serviceRequest, encounter, consent, provenance, conditions, procedures, observations, diagnosticReport, medication, medicationRequest, medicationDispense, composition, appointment, coverage, coverageEligibilityResponse, account, chargeItems, claim, claimResponse, explanationOfBenefit, measureReport, transactionBundle: resolvedBundle, allResources: concreteResources };
+  return { hospitalId: seed.id, hospitalName: seed.hospitalName, organization, payorOrganization, patient, duplicateEmergencyPatient, practitioner, location, episodeOfCare, serviceRequest, encounter, consent, provenance, conditions, procedures, observations, diagnosticReport, medication, medicationRequest, medicationDispense, composition, appointment, coverage, coverageEligibilityResponse, account, chargeItems, claim, claimResponse, explanationOfBenefit, measureReport, transactionBundle: resolvedBundle, allResources: concreteResources, resources: concreteResources, contained: [containedRequest], graphRevision: deterministicUuidV4(`${seed.id}:graph:${now}`), sourceMap: Object.fromEntries(concreteResources.map(resource => [`${resource.resourceType}/${resource.id}`, { sourceTable: 'SIMRS', sourceKey: `${seed.id}:${resource.id}`, observedAt: now }])), };
 }

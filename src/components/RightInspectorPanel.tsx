@@ -39,7 +39,7 @@ function ViewDefinitionTab() {
   const view = SQL_ON_FHIR_VIEW_DEFINITIONS.find((item) => item.name === selectedViewDefName) ?? SQL_ON_FHIR_VIEW_DEFINITIONS[0];
   const rows = useMemo(() => {
     if (!view) return [];
-    const flattenedRows = flattenedResult?.tables[view.targetTable];
+    const flattenedRows = view?.targetTable ? flattenedResult?.tables[view.targetTable] : undefined;
     if (flattenedRows?.length) return flattenedRows.slice(0, 3).map((row, index) => ({ id: String(row.id ?? index + 1), values: Object.entries(row).map(([name, output]) => ({ name, expression: name, output })) }));
     if (!dataset) return [];
     const resourceRows = dataset.allResources.filter((resource) => resource.resourceType === view.resource);

@@ -39,6 +39,8 @@ export interface FhirStoreState {
   activeDataset: NormalizedHospitalDataset | null;
   validationReport: ValidationReport | null;
   flattenedResult: FlattenedDatasetResult | null;
+  invalidFlattenedPreview: FlattenedDatasetResult | null;
+  lastValidFlattenedResult: FlattenedDatasetResult | null;
   activeModuleNumber: number;
   statusFilter: StatusFilter;
   completedMissionIds: string[];
@@ -55,6 +57,8 @@ export interface FhirStoreState {
   tableRowsPreview: Record<string, unknown>[];
   sqlQueryText: string;
   sqlQueryResult: SqlQueryExecutionResult | null;
+  lastValidSqlQueryResult: SqlQueryExecutionResult | null;
+  invalidSqlQueryResult: SqlQueryExecutionResult | null;
   isExecutingSql: boolean;
   initializeLab: () => Promise<void>;
   selectHospital: (id: string) => void;
@@ -85,15 +89,21 @@ const isKnownHospital = (id: string): boolean => SIMRS_HOSPITAL_SEEDS.some((seed
 const normalizeDataset = (
   seed: SimrsHospitalSeed,
   overrides: Partial<SandboxClinicalFinancialOverrides> = {},
-): NormalizedHospitalDataset => normalizeSimrsToFhir(seed, { ...seed.defaultOverrides, ...overrides });
+): NormalizedHospitalDataset => normalizeSimrsToFhir(seed, overrides);
 
-const deriveDatasetState = (dataset: NormalizedHospitalDataset) => ({
-  activeDataset: dataset,
-  validationReport: validateFhirDataset(dataset),
-  flattenedResult: flattenDatasetWithSqlOnFhir(dataset),
-  selectedResourceType: dataset.patient.resourceType,
-  selectedResourceId: dataset.patient.id,
-});
+const deriveDatasetState = (dataset: NormalizedHospitalDataset, previous?: Pick<FhirStoreState, 'lastValidFlattenedResult'>) => {
+  const validationReport = validateFhirDataset(dataset);
+  const flattenedResult = flattenDatasetWithSqlOnFhir(dataset);
+  return {
+    activeDataset: dataset,
+    validationReport,
+    flattenedResult,
+    invalidFlattenedPreview: validationReport.valid ? null : flattenedResult,
+    lastValidFlattenedResult: validationReport.valid ? flattenedResult : previous?.lastValidFlattenedResult ?? null,
+    selectedResourceType: dataset.patient.resourceType,
+    selectedResourceId: dataset.patient.id,
+  };
+};
 
 const syncIfReady = async (db: PGlite | null, datasets: NormalizedHospitalDataset[]): Promise<void> => {
   if (db) await syncDatasetsToPglite(db, datasets);
@@ -115,6 +125,8 @@ export const useFhirStore = create<FhirStoreState>((set, get) => ({
   activeDataset: null,
   validationReport: null,
   flattenedResult: null,
+  invalidFlattenedPreview: null,
+  lastValidFlattenedResult: null,
   activeModuleNumber: 1,
   statusFilter: 'ALL',
   completedMissionIds: [],
@@ -131,6 +143,8 @@ export const useFhirStore = create<FhirStoreState>((set, get) => ({
   tableRowsPreview: [],
   sqlQueryText: '',
   sqlQueryResult: null,
+  lastValidSqlQueryResult: null,
+  invalidSqlQueryResult: null,
   isExecutingSql: false,
 
   initializeLab: async () => {
@@ -169,7 +183,7 @@ export const useFhirStore = create<FhirStoreState>((set, get) => ({
     if (!isKnownHospital(id)) return;
     const state = get();
     const dataset = state.datasetsByHospital[id];
-    set({ selectedHospitalId: id, ...(dataset ? deriveDatasetState(dataset) : {}) });
+    set({ selectedHospitalId: id, ...(dataset ? deriveDatasetState(dataset, state) : {}) });
   },
 
   updateOverrides: async (partial) => {
@@ -177,14 +191,22 @@ export const useFhirStore = create<FhirStoreState>((set, get) => ({
     const seed = SIMRS_HOSPITAL_SEEDS.find((candidate) => candidate.id === state.selectedHospitalId);
     if (!seed) return;
     const overrides = { ...(state.overridesByHospital[seed.id] ?? {}), ...partial };
-    const dataset = normalizeDataset(seed, overrides);
+    let dataset: NormalizedHospitalDataset;
+    try {
+      dataset = normalizeDataset(seed, overrides);
+    } catch (error) {
+      set({ dbError: error instanceof Error ? error.message : String(error), dbSyncing: false });
+      return;
+    }
     const datasetsByHospital = { ...state.datasetsByHospital, [seed.id]: dataset };
+    const derived = deriveDatasetState(dataset, state);
     set({
       overridesByHospital: { ...state.overridesByHospital, [seed.id]: overrides },
       datasetsByHospital,
-      dbSyncing: Boolean(state.db),
-      ...deriveDatasetState(dataset),
+      dbSyncing: Boolean(state.db && derived.validationReport.valid),
+      ...derived,
     });
+    if (!state.db || !derived.validationReport.valid) return;
     try {
       await enqueueDatasetSync(state.db, Object.values(datasetsByHospital));
       set({ dbSyncing: false, dbError: null });
@@ -203,7 +225,7 @@ export const useFhirStore = create<FhirStoreState>((set, get) => ({
       overridesByHospital: { ...state.overridesByHospital, [seed.id]: {} },
       datasetsByHospital,
       dbSyncing: Boolean(state.db),
-      ...deriveDatasetState(dataset),
+      ...deriveDatasetState(dataset, state),
     });
     try {
       await enqueueDatasetSync(state.db, Object.values(datasetsByHospital));
@@ -237,7 +259,7 @@ export const useFhirStore = create<FhirStoreState>((set, get) => ({
         [hospitalId]: { ...(latestState.overridesByHospital[hospitalId] ?? {}), mergedDuplicatePatient: true },
       };
       await enqueueDatasetSync(db, Object.values(datasetsByHospital));
-      const activeAfterSync = get().selectedHospitalId === hospitalId ? deriveDatasetState(result.updatedDataset) : {};
+      const activeAfterSync = get().selectedHospitalId === hospitalId ? deriveDatasetState(result.updatedDataset, get()) : {};
       set({
         overridesByHospital,
         datasetsByHospital,
@@ -277,14 +299,16 @@ export const useFhirStore = create<FhirStoreState>((set, get) => ({
     if (!query) return;
     set({ sqlQueryText: query, isExecutingSql: true, sqlQueryResult: null });
     if (!state.db) {
-      set({ isExecutingSql: false, sqlQueryResult: { columns: [], rows: [], rowCount: 0, executionTimeMs: 0, error: 'PGlite belum terinisialisasi.' } });
+      const result = { columns: [], rows: [], rowCount: 0, executionTimeMs: 0, error: 'PGlite belum terinisialisasi.' };
+      set({ isExecutingSql: false, sqlQueryResult: result, invalidSqlQueryResult: result });
       return;
     }
     try {
       const result = await executeSqlQuery(state.db, query);
-      set({ isExecutingSql: false, sqlQueryResult: result, dbError: result.error ?? null });
+      set({ isExecutingSql: false, sqlQueryResult: result, lastValidSqlQueryResult: result.error ? get().lastValidSqlQueryResult : result, invalidSqlQueryResult: result.error ? result : null, dbError: result.error ?? null });
     } catch (error) {
-      set({ isExecutingSql: false, sqlQueryResult: { columns: [], rows: [], rowCount: 0, executionTimeMs: 0, error: error instanceof Error ? error.message : String(error) } });
+      const result = { columns: [], rows: [], rowCount: 0, executionTimeMs: 0, error: error instanceof Error ? error.message : String(error) };
+      set({ isExecutingSql: false, sqlQueryResult: result, invalidSqlQueryResult: result });
     }
   },
 }));

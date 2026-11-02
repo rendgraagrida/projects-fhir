@@ -1,151 +1,338 @@
-# Technical Architecture Specification (v10.0)
-## Global HL7 FHIR, SQL-on-FHIR v2 (`fhir-data-pipes`) & Pioneer Healthcare Normalization Learning Lab
+# Universal 5-Stage Production Pipeline
+## Global HL7 FHIR Learning Lab & SIMRS Normalization Sandbox
 
----
+**Status:** Dokumen spesifikasi arsitektur dan rencana Fase 2; bukan laporan implementasi selesai, sertifikasi HL7, atau bukti integrasi SATUSEHAT.
 
-## 1. Architectural Vision & Strategic Point of View (POV)
+**Normative baseline:** HL7 FHIR R4 `4.0.1`; SQL-on-FHIR `2.0.0`; profil nasional hanya jika use case, versi, environment, terminologi, dan evidence disebutkan. `00-master-manifest.md`, `02-tech-and-architecture.md`, `08-workflow-environments.md`, dan `layout.md` adalah aturan kanonikal repository.
 
-This application is an interactive web learning platform and production-grade healthcare data normalization sandbox that unifies heterogeneous Indonesian hospital information system (SIMRS) schemas into **PostgreSQL (via in-browser WebAssembly PGlite)** using the official **HL7 FHIR Standard** and **SQL-on-FHIR v2 (`fhir-data-pipes`)**.
+**Verification boundary:** Isi ini mendefinisikan target yang harus diimplementasikan dan diuji. Klaim `pass` hanya boleh ditulis setelah bukti aktual dicatat; status default untuk national conformance dan terminology yang tidak tersedia adalah `not-assessed`.
 
-### Core Paradigm: "Global-First Pioneer Blueprint for Indonesia"
-1. **End-to-End Official HL7 FHIR Standard (Levels 1 to 5):**
-   Normalizes hospital medical records across Foundation (Level 1), Terminology & Security (Level 2), Administration (Level 3), Clinical/Diagnostics/Medications (Level 4A), Workflow (Level 4B), Financial & Claims (Level 4C), and Clinical Reasoning & Quality Reporting (Level 5).
-2. **Pioneer Global Standard for Unregulated National Domains:**
-   Where national implementation (SATUSEHAT) only covers baseline administration and clinical resources, this system acts as the **pioneer national blueprint** by implementing the official global HL7 FHIR specification for Financial & Claims (`Coverage`, `CoverageEligibilityResponse`, `Account`, `ChargeItem`, `Claim`, `ClaimResponse`, `ExplanationOfBenefit`), Workflow (`ServiceRequest`, `Appointment`), and Quality Reporting (`MeasureReport`).
-3. **Explicit Adoption Status Badges Across Every Module, Resource, and Table:**
-   - 🟢 `IMPLEMENTED_SATUSEHAT` — **`[IMPLEMENTED IN INDONESIA - SATUSEHAT BASELINE]`**
-   - 🟡 `PARTIAL_NATIONAL` — **`[PARTIAL IN INDONESIA - EXTENDED BY GLOBAL FHIR]`**
-   - 🔵 `PIONEER_GLOBAL_FHIR` — **`[PIONEER GLOBAL FHIR STANDARD - READY FOR INDONESIA ADOPTION]`**
+## 0. Tujuan, scope, dan batas klaim
 
----
+Aplikasi mengajarkan dekomposisi row SIMRS menjadi graph resource FHIR, validasi berlapis, proyeksi SQL-on-FHIR, dan analitik lokal PGlite melalui tiga panel React. Fokusnya adalah tiga seed rumah sakit sintetis dan skenario learning lab, bukan server FHIR, terminology server, payment gateway, digital-signature verifier, atau integrasi API nasional.
 
-## 2. Tech Stack & System Architecture
+Empat lapisan penilaian harus selalu dibedakan:
 
-| Layer | Technology | Role |
-| :--- | :--- | :--- |
-| **Runtime & Bundler** | Bun + Vite + React 18 + TypeScript (`strict: true`) | Fast bundling, strict static typing, modern ESM |
-| **Styling & Icons** | Tailwind CSS + `lucide-react` | Responsive 3-panel split-screen workspace UI & status badges |
-| **State Management** | `zustand` | Reactive state orchestration across curriculum, sandbox, normalizer, validator, flattener, and PGlite |
-| **In-Browser PostgreSQL** | `@electric-sql/pglite` | Real PostgreSQL engine running via WebAssembly in the browser (27 relational tables + 3 analytical views) |
-| **Graph Visualization** | `@xyflow/react` | Interactive node-edge graph showing clinical-to-financial FHIR `Reference` chains |
+| Lapisan | Dinilai terhadap | Tidak boleh diklaim |
+|---|---|---|
+| Core R4 | R4 4.0.1 structure, cardinality, choice, invariant, binding, reference | enam rule group lokal adalah seluruh validator HL7 |
+| `lab-r4` | populated evidence, BP profile, finance reconciliation, merge policy | kebijakan demo adalah invariant universal |
+| SQL-on-FHIR | SOF 2.0.0 ViewDefinition dan runner yang dinyatakan didukung | insert SQL membuktikan JSON FHIR valid |
+| SATUSEHAT | named use case/profile/version/terminology/environment | URI nasional, badge, atau data sintetis berarti production-ready |
 
-### Architectural Data Flow
+**Assessment states:** `pass`, `fail`, `not-assessed`; `valid` adalah convenience result untuk execution profile terpilih, bukan sertifikasi. Semua issue membawa source (`HL7_R4`, `SATUSEHAT`, `LAB_POLICY`, `PROJECTION`), path, severity, rule/profile, URL/version bila ada, dan provenance sumber.
 
-```mermaid
-flowchart LR
-    SIMRS["Multi-Hospital Raw SIMRS Seeds\n(RSUD / RS Swasta / RSIA)"] --> Normalizer["FHIR Normalizer Engine\n(src/lib/fhir-normalizer.ts)"]
-    Normalizer --> Bundle["HL7 FHIR Bundle (transaction)\n26 Resource Types (Level 1-5)"]
-    Bundle --> Validator["6-Rule HL7 FHIR Validator\n(src/lib/fhir-validator.ts)"]
-    Bundle --> Flattener["SQL-on-FHIR v2 Flattener\n(src/lib/sql-on-fhir-flattener.ts)"]
-    Flattener --> PGlite["PostgreSQL PGlite Engine\n27 Tables + 3 Analytical Views\n(src/lib/pglite-db.ts)"]
-    Bundle --> Graph["@xyflow/react Relationship Graph\n& 4-Tab Live Inspector"]
-    PGlite --> SQLConsole["Interactive Cross-Hospital\nSQL Analytics Console"]
+## 1. Pipeline lima tahap
+
+### Stage 1 — Source and contracts
+
+Pin package/artifact `hl7.fhir.r4.core#4.0.1`, R4 model metadata, FHIRPath R4 engine, terminology evidence, exact-decimal arithmetic, dan SQL-on-FHIR 2.0.0. `src/types/fhir-global.ts` menjadi public boundary complete R4; tidak boleh ada schema R4 handwritten kedua yang parsial. Source adapters menyimpan source table/key dan timestamp asli.
+
+### Stage 2 — Normalize
+
+Adapter memetakan seed SIMRS ke graph resource menggunakan precedence:
+
+`explicit sandbox override > mapped raw source value > documented fixture-only value`.
+
+Input biasa yang invalid (negative/NaN/infinite/unsafe money, ambiguous entity, malformed date) menghasilkan `NormalizationError`; intentional negative-case injection diberi label dan tidak boleh masuk snapshot DB valid. Tidak ada city-driven payer/medication/order inference.
+
+### Stage 3 — Assess
+
+Reference index dibangun sebelum validator. Validator menerapkan core R4, selected `lab-r4`, dan national assessment secara terpisah. Contained resource diselesaikan dengan owner scope. Unsupported terminology/profile menghasilkan `not-assessed`, bukan fabricated pass.
+
+### Stage 4 — Project and persist
+
+FHIRPath model R4 + SOF-2 runner menghasilkan typed rows untuk 27 tabel. Row mempertahankan `(resourceType,id)`, hospital/dataset scope, `raw_fhir` JSONB, temporal lexeme, dan numeric precision. PGlite melakukan versioned migration dan satu transaction untuk snapshot valid saja; preview invalid tetap di UI.
+
+### Stage 5 — Inspect and prove
+
+Zustand menyimpan satu graph revision, assessment, SQL revision, merge state, dan query history. UI menampilkan FHIR/Bundle/contained JSON, provenance, validation issues, SQL rows/views, latency, dan last-valid snapshot. QA, reviewer, dan security audit menggunakan acceptance matrix §10.
+
+## 2. Inventaris resource dan envelope
+
+### 2.1 26 concrete top-level FHIR R4 resource types
+
+Daftar kanonikal (tepat 26, tidak termasuk Bundle dan contained request):
+
+1. Organization  2. Patient  3. Practitioner  4. Location  5. EpisodeOfCare  6. ServiceRequest  7. Encounter  8. Consent  9. Provenance  10. Condition  11. Procedure  12. Observation  13. DiagnosticReport  14. Medication  15. MedicationRequest  16. MedicationDispense  17. Composition  18. Appointment  19. Coverage  20. CoverageEligibilityResponse  21. Account  22. ChargeItem  23. Claim  24. ClaimResponse  25. ExplanationOfBenefit  26. MeasureReport.
+
+`Bundle` adalah Resource envelope untuk transaction/inspection dan tidak mendapat analytical table. `CoverageEligibilityRequest` adalah fully modeled **contained resource** di dalam `CoverageEligibilityResponse` pada eligibility scenario:
+
+```text
+CoverageEligibilityResponse.contained[0].resourceType = CoverageEligibilityRequest
+CoverageEligibilityResponse.contained[0].id = "eligibility-request"
+CoverageEligibilityResponse.request.reference = "#eligibility-request"
 ```
 
----
+Contained request harus memenuhi minimum R4 (`status`, non-empty `purpose`, `patient`, `created`, `insurer` sesuai selected profile), owner-scoped resolve, dan **tidak** menjadi top-level resource, catalog projected resource, atau tabel ke-28.
 
-## 3. Zero-Bug Conformance Invariants
+### 2.2 Resource-specific minimum and profile boundary
 
-1. **`Claim.total` (`0..1 Money`) vs `ClaimResponse.total[]` & `ExplanationOfBenefit.total[]` (`0..* BackboneElement`):**
-   - `Claim.total` is a direct `Money` object (`{ value: number, currency: 'IDR' }`), **never** an array. Its SQL-on-FHIR v2 FHIRPath expression is `total.value` and `total.currency`.
-   - `ClaimResponse.total[]` and `ExplanationOfBenefit.total[]` are arrays of `BackboneElement` containing `category` (`http://terminology.hl7.org/CodeSystem/adjudication`: `submitted` vs `benefit`) and `amount` (`Money`).
-2. **Separation of `fhir_claim` Header and `fhir_claim_item` Detail (`forEach: "item"`):**
-   - `fhir_claim_header_view` populates `fhir_claim` (1 row per claim).
-   - `fhir_claim_item_view` uses `forEach: "item"` to unnest `Claim.item[]` into `fhir_claim_item` (N rows per claim, with composite primary key `claim_id + '-' + sequence`).
-   - Every `Claim.item[]` element must carry `sequence` (`1..1`), `productOrService` (`1..1` mandatory `CodeableConcept`), `category` (`http://terminology.hl7.org/CodeSystem/ex-benefitcategory`), `encounter` (`Reference(Encounter)[]`), and `net` (`Money` in `IDR`).
-3. **Native Browser SQL-on-FHIR v2 Evaluator (`src/lib/sql-on-fhir-flattener.ts`):**
-   - Full support for `getResourceKey()`, `getReferenceKey('ResourceType')`, polymorphic `getReferenceKey()` (no argument, returning `'ResourceType/id'` or extracting ID/type for `Provenance.target` and `ChargeItem.supportingInformation`), `.where(...)`, `.first()`, `.exists(...)`, `.ofType(...)`, and `forEach` / `forEachOrNull`.
-   - Synchronizes `diagnosis_role_code` (`AD | DD | CC | CM`) and `diagnosis_rank` (`1..n`) from `Encounter.diagnosis[]` into `fhir_condition`.
-4. **HL7 FHIR Invariants (`obs-7`, `cmp-1`, `bdl-3`):**
-   - **`obs-7` (Observation Multi-Component):** Multi-component panels such as Blood Pressure (`LOINC 85354-9`) store Systolic (`8480-6`) and Diastolic (`8462-4`) in `Observation.component[]` with UCUM `mm[Hg]` and **must omit** root `value[x]` (`valueQuantity`, `valueString`, etc.).
-   - **`cmp-1` (Composition Section):** Every `Composition.section[]` entry must contain at least one of `entry[]` (non-empty `Reference[]`), `text` (narrative XHTML), or `emptyReason` (`CodeableConcept`).
-   - **`bdl-3` (Bundle Transaction):** Every `Bundle.entry[]` in a `transaction` bundle must carry `fullUrl` (supporting `urn:uuid:`) and `request: { method, url }`, ordered strictly `DELETE -> POST -> PUT -> GET`, with all `urn:uuid:` references resolved to canonical `ResourceType/id` references prior to PostgreSQL persistence.
+Implementasi memakai official R4 snapshots untuk seluruh nested elements. Ringkasan berikut mencegah over-requirement:
 
----
+| Resource | Core minimum / mandatory focus | `lab-r4` requirement dan known boundary |
+|---|---|---|
+| Organization | `org-1` name or identifier; `org-2` address use not `home`; `org-3` period rules | provider/payor identities and work address are synthetic unless sourced |
+| Patient | no universal business field beyond resource shape | selected identifier provenance, merge/link graph, source birth-date precision |
+| Practitioner | no universal name | source-backed role/name; synthetic IHS is not MPI evidence |
+| Location | no universal name/status | room identity, managingOrganization, physicalType when scenario supplies it |
+| EpisodeOfCare | `status`, `patient`; type must have honest semantics | no misuse of `hacc`; period precision retained |
+| ServiceRequest | `status`, `intent`, `subject` | code/order only when source supports it; no invented Observation links |
+| Encounter | `status`, `class` | subject/period and diagnosis references selected by local profile; `appointment` is Reference[] |
+| Consent | `status`, `scope`, category +; `ppc-1` policy or policyRule | synthetic training policy URI clearly labeled; category uses correct LOINC/value set |
+| Provenance | target +, recorded, agent +, agent.who | first-target SQL summary is lossy and labeled; signature metadata is not verification |
+| Condition | subject and conditional clinical/verification rules | Encounter diagnosis is authority; rank is not universal principal/comorbidity |
+| Procedure | `status`, `subject` | performed[x] preserves Period vs dateTime; source procedure category only |
+| Observation | `status`, `code`; component.code when component present; obs-3/6/7 | BP profile uses LOINC 85354-9 components 8480-6/8462-4, UCUM `mm[Hg]`; this is profile, not universal obs-7 |
+| DiagnosticReport | `status`, `code` | result references only when source order/specimen semantics support them |
+| Medication | no business field; ingredient.item[x] required when ingredient exists | `amount` is Ratio; MedicationType shape/system separately assessed |
+| MedicationRequest | `status`, `intent`, medication[x], subject | exactly one medication choice; rich dosage optional unless profile requires |
+| MedicationDispense | `status`, medication[x] | daysSupply is decimal SimpleQuantity; enforce `mdd-1` |
+| Composition | `status`, `type`, `date`, author +, title | recursive `cmp-1`/`cmp-2`; five sections are scenario, not universal R4 |
+| Appointment | `status`, participant +, participant.status | actor-or-type and app constraints; national API evidence is environment-scoped |
+| Coverage | `status`, beneficiary, payor + | payor is polymorphic; no hard-coded BPJS for commercial scenario |
+| CoverageEligibilityResponse | status, purpose +, patient, created, request CER, outcome, insurer | request must resolve to contained CoverageEligibilityRequest; eligibility independent from adjudication |
+| Account | `status` | only R4 Account fields; analytics must not add diagnosis/procedure/balance as FHIR fields |
+| ChargeItem | `status`, `code`, `subject` | `priceOverride` is total charge price; derived unit rate null for zero/absent quantity |
+| Claim | status, type, use, patient, created, provider, priority, insurance + | sequence/choice/reference links and local financial equations; local codes use local URI |
+| ClaimResponse | status, type, use, patient, created, insurer, outcome | totals are optional core; added-item adjudication reconciled independently |
+| ExplanationOfBenefit | status, type, use, patient, created, insurer, provider, outcome, insurance + | currency, selected response policy, benefit/variance and multi-response cardinality explicit |
+| MeasureReport | status, type, measure, period | illustrative score unless a computable Measure definition is present; `subjectResults` singleton |
+| Bundle | `type`; type-specific bdl rules | transaction request/body/identity/fullUrl checks; client entry order is not an invariant |
+| Contained CER | full R4 CER model and owner-scoped identity | never emitted as separate table/resource; inspected under response |
 
-## 4. Modular File Structure & Contract Specifications
+Core optional elements remain optional. Profile requirements are enforced before persistence, not fabricated in normalizer/flattener/database.
 
-### 4.1 Phase 1 & Phase 2 Core Modules (Mandatory Exact Paths)
+## 3. Data contracts and module interfaces
 
-#### 1. `src/types/fhir-global.ts`
-Defines all strict TypeScript contracts:
-- `ImplementationStatus`: `'IMPLEMENTED_SATUSEHAT' | 'PARTIAL_NATIONAL' | 'PIONEER_GLOBAL_FHIR'`
-- Base HL7 FHIR DataTypes: `Coding`, `CodeableConcept`, `Identifier`, `Reference`, `Quantity`, `SimpleQuantity`, `Money`, `Period`, `Extension`, `Narrative`, `Address`, `HumanName`, `Signature`
-- All HL7 FHIR Resource Interfaces (Levels 1–5):
-  - Level 1 & 2: `FhirResourceBase`, `Bundle`, `BundleEntry`, `Consent`, `Provenance`
-  - Level 3: `Organization`, `Patient`, `Practitioner`, `Location`, `EpisodeOfCare`, `ServiceRequest`, `Encounter`
-  - Level 4A & 4B: `Condition`, `Procedure`, `Observation`, `DiagnosticReport`, `Medication`, `MedicationRequest`, `MedicationDispense`, `Composition`, `Appointment`
-  - Level 4C (Pioneer Financial & Claims): `Coverage`, `CoverageEligibilityResponse`, `Account`, `ChargeItem`, `Claim`, `ClaimItem`, `ClaimResponse`, `ExplanationOfBenefit`
-  - Level 5 (Pioneer Quality): `MeasureReport`
-  - Discriminated union `FhirResource` and normalized bundle container `NormalizedHospitalDataset`
-- SQL-on-FHIR v2 types: `ViewDefinition`, `ViewDefinitionSelect`, `ViewDefinitionColumn`, `FlattenedTableRows`
-- Validator types: `ValidationRuleId` (the 6 official rule IDs), `ValidationIssue`, `ValidationRuleResult`, `ValidationReport`
-- Raw SIMRS input schema types (`SimrsHospitalSeed`, `TerminologyDictionary`) and sandbox mutation options (`SandboxClinicalFinancialOverrides`).
+### 3.1 Canonical types
 
-#### 2. `src/lib/pglite-db.ts`
-Manages the in-browser `@electric-sql/pglite` PostgreSQL database:
-- Exports `FHIR_DDL_SQL`: Complete DDL for all **27 tables** (`fhir_organization`, `fhir_patient`, `fhir_practitioner`, `fhir_location`, `fhir_episode_of_care`, `fhir_service_request`, `fhir_encounter`, `fhir_consent`, `fhir_provenance`, `fhir_condition`, `fhir_procedure`, `fhir_observation`, `fhir_diagnostic_report`, `fhir_medication`, `fhir_medication_request`, `fhir_medication_dispense`, `fhir_composition`, `fhir_appointment`, `fhir_coverage`, `fhir_coverage_eligibility_response`, `fhir_account`, `fhir_charge_item`, `fhir_claim`, `fhir_claim_item`, `fhir_claim_response`, `fhir_explanation_of_benefit`, `fhir_measure_report`) with `ON UPDATE CASCADE ON DELETE CASCADE` / `SET NULL` and `raw_fhir JSONB NOT NULL`, plus the **3 Analytical Views** (`vw_fhir_clinical_diagnosis_recap`, `vw_fhir_financial_claim_recap`, `vw_fhir_clinical_to_claim_audit`).
-- Exports `TABLE_METADATA`: Metadata for all 27 tables + 3 views (table name, resource type, level, implementation status badge, description).
-- Exports database lifecycle & query functions:
-  - `initPgliteDatabase(existingInstance?: PGlite): Promise<PGlite>`
-  - `syncDatasetToPglite(db: PGlite, datasets: NormalizedHospitalDataset[]): Promise<void>`
-  - `executeSqlQuery(db: PGlite, sql: string, params?: unknown[]): Promise<SqlQueryExecutionResult>`
-  - `resolveAndMergeDuplicatePatient(db: PGlite, dataset: NormalizedHospitalDataset, duplicatePatientId: string, targetMasterPatientId: string): Promise<{ updatedDataset: NormalizedHospitalDataset; mergedPatient: Patient }>`
+```ts
+type SupportedTopLevelResource =
+  Organization | Patient | Practitioner | Location | EpisodeOfCare |
+  ServiceRequest | Encounter | Consent | Provenance | Condition | Procedure |
+  Observation | DiagnosticReport | Medication | MedicationRequest |
+  MedicationDispense | Composition | Appointment | Coverage |
+  CoverageEligibilityResponse | Account | ChargeItem | Claim | ClaimResponse |
+  ExplanationOfBenefit | MeasureReport;
 
-#### 3. `src/data/simrs-normalization-seeds.ts`
-Provides multi-hospital raw SIMRS datasets, terminology dictionaries, and educational annotations:
-- `STANDARD_TERMINOLOGY_DICTIONARY`: ICD-10, ICD-9-CM, LOINC, SNOMED-CT, UCUM, KFA, Wilayah Kemendagri (`province`, `city`, `district`, `village`, `rt`, `rw`), and HL7 Financial CodeSystems (`claim-type`, `ex-benefitcategory`, `ex-diagnosistype`, `adjudication`, `coverage-class`, `discharge-disposition`, `diagnosis-role`).
-- `SIMRS_HOSPITAL_SEEDS`: 3 distinct Indonesian hospitals with heterogeneous local SIMRS schemas:
-  1. **RSUD Dr. Soetomo Nusantara (Surabaya - Jawa Timur)**: Legacy flat snake_case SIMRS (`tb_pasien_rsud`, `tb_kunjungan_ranap`, `tb_billing_ina_cbg`) — Inpatient severe pneumonia with mechanical ventilation (`ICD-10 J18.9` + `E11.9`, `ICD-9-CM 96.71`, `DRG-RESP-MCC`).
-  2. **RS Premier Harapan Bangsa (Jakarta Selatan - DKI Jakarta)**: Modular JSON/CamelCase SIMRS (`MasterPasien`, `EpisodeKunjungan`, `TagihanFinansial`) — Acute STEMI Cardiology intervention (`ICD-10 I21.0` + `I10`, `ICD-9-CM 36.06` coronary stent).
-  3. **RSIA Bunda Sejahtera (Bandung - Jawa Barat)**: Regional Clinic/Maternal SIMRS (`reg_pasien`, `igd_visit`, `klaim_jkn`) — Pre-eclampsia emergency delivery (`ICD-10 O14.1`, `ICD-9-CM 74.1` C-section) including an emergency temp patient record (`pat-temp-igd-003`) ready for `Patient.link[]` merge resolution.
-- `FHIR_ATTRIBUTE_ANNOTATIONS`: Bahasa Indonesia educational explanations for FHIR JSON paths across all resources.
-- `SAMPLE_ANALYTICAL_SQL_QUERIES`: Pre-built cross-hospital SQL queries targeting the 3 analytical views and 27 tables.
+type FhirResource = SupportedTopLevelResource | Bundle | CoverageEligibilityRequest;
+type NormalizedResource<T extends FhirResource> = T & { id: string };
 
-#### 4. `src/lib/fhir-normalizer.ts`
-Transforms raw SIMRS hospital data into normalized HL7 FHIR resources and `Bundle` (`type: "transaction"`):
-- `normalizeSimrsToFhir(seed: SimrsHospitalSeed, overrides?: SandboxClinicalFinancialOverrides): NormalizedHospitalDataset`
-- Generates all 26 concrete HL7 FHIR resource types (Levels 1–5) per hospital seed.
-- Resolves `urn:uuid:` transaction bundle references into canonical `ResourceType/id` references (`resolveTransactionBundleUrns`).
-- Orders transaction bundle entries according to HTTP semantics (`DELETE -> POST -> PUT -> GET`).
-- Supports interactive sandbox overrides to test both valid conformance and intentional violations (`injectObs7Violation`, `injectCmp1Violation`, `injectBrokenEvidenceChain`, `injectFinancialMismatch`, `injectBundleOrderViolation`, plus custom claim/adjudication values).
+type NormalizedHospitalDataset = {
+  hospitalId: string;
+  resources: readonly SupportedTopLevelResource[];
+  transactionBundle: Bundle;
+  contained: readonly CoverageEligibilityRequest[];
+  graphRevision: string;
+  sourceMap: SourceIdentityMap;
+};
+```
 
-#### 5. `src/lib/fhir-validator.ts`
-Evaluates the 6 HL7 FHIR conformance and clinical-to-financial evidence rules:
-- `validateFhirDataset(dataset: NormalizedHospitalDataset): ValidationReport`
-- Implements all 6 official rules:
-  1. `FHIR_STD_01_MANDATORY_CARDINALITY`
-  2. `FHIR_STD_02_OBSERVATION_INVARIANT_OBS7`
-  3. `FHIR_STD_03_COMPOSITION_INVARIANT_CMP1`
-  4. `FHIR_STD_04_CLINICAL_TO_CLAIM_EVIDENCE_CHAIN`
-  5. `FHIR_STD_05_FINANCIAL_RECONCILIATION`
-  6. `FHIR_STD_06_BUNDLE_TRANSACTION_BDL3`
+`Resource` and `DomainResource` semantics are distinct; FHIR primitive metadata (`Element.id`, extensions, `_value`), datatypes, choice alternatives, and inherited fields are represented through the pinned R4 source. A typed field must reject both/zero choice where a selected contract requires exactly one, while runtime validation still accepts `unknown` safely.
 
-#### 6. `src/lib/sql-on-fhir-flattener.ts`
-Implements the SQL-on-FHIR v2 (`fhir-data-pipes`) `ViewDefinition` catalog and native browser FHIRPath evaluator:
-- `SQL_ON_FHIR_VIEW_DEFINITIONS`: Complete list of 27 `ViewDefinition` objects (including `fhir_claim_header_view` -> `fhir_claim` and `fhir_claim_item_view` with `forEach: "item"` -> `fhir_claim_item`).
-- `evaluateFhirPath(resource: unknown, expression: string, rootResource?: unknown): unknown[]`
-- `evaluateViewDefinition(viewDef: ViewDefinition, resources: FhirResource[]): Record<string, unknown>[]`
-- `flattenDatasetWithSqlOnFhir(dataset: NormalizedHospitalDataset): FlattenedDatasetResult` (including automatic synchronization of `diagnosis_role_code` and `diagnosis_rank` from `Encounter.diagnosis[]` to `fhir_condition` rows).
+### 3.2 Normalization and reference API
 
----
+```ts
+normalizeSimrsToFhir(
+  seed: SimrsHospitalSeed,
+  overrides?: SandboxClinicalFinancialOverrides,
+): NormalizedHospitalDataset;
 
-### 4.2 Phases 3–6: State Management, 12-Module Curriculum & 3-Panel Interactive UI
+buildReferenceIndex(
+  resources: readonly FhirResource[], bundle?: Bundle,
+): ReferenceIndex;
 
-| File Path | Responsibility |
-| :--- | :--- |
-| `src/data/curriculum-modules.ts` | Complete 12-module curriculum (Levels 1–5 & SQL-on-FHIR v2), 5 Normalization Laws, SQL-to-FHIR translation cheat sheet, status badges (🟢/🟡/🔵), and interactive missions. |
-| `src/store/use-fhir-store.ts` | Zustand store orchestrating selected hospital seed, sandbox overrides, normalized FHIR datasets across all 3 hospitals, validation report, flattened SQL-on-FHIR rows, live PGlite instance & query execution, patient merge (`Patient.link[]`), curriculum filter, and completed missions. |
-| `src/components/StatusBadge.tsx` | Renders the 3 official implementation status badges (`🟢 IMPLEMENTED IN INDONESIA - SATUSEHAT BASELINE`, `🟡 PARTIAL IN INDONESIA - EXTENDED BY GLOBAL FHIR`, `🔵 PIONEER GLOBAL FHIR STANDARD - READY FOR INDONESIA ADOPTION`). |
-| `src/components/LeftCurriculumPanel.tsx` | **Left Panel:** 12-Module navigation, status filter (🟢/🟡/🔵), step-by-step mental model, interactive mission checklist, and SQL-to-FHIR translation cheat sheet. |
-| `src/components/CenterSandboxPanel.tsx` | **Center Panel:** Multi-hospital SIMRS normalization comparison, Interactive Clinical-to-Financial Evidence Chain Editor + Invariant Simulator + `Patient.link[]` merge trigger, `@xyflow/react` FHIR Resource Relationship Graph, and Interactive PostgreSQL SQL Console. |
-| `src/components/RightInspectorPanel.tsx` | **Right Panel (4 Live Inspection Tabs):** Tab 1 (Live HL7 FHIR JSON + Indonesian attribute explanations), Tab 2 (SQL-on-FHIR v2 `ViewDefinition` + FHIRPath & live flattened preview), Tab 3 (PostgreSQL Global FHIR 27 Tables + 3 Views live from PGlite), Tab 4 (HL7 FHIR 6-Rule Conformance & Evidence Validator). |
-| `src/App.tsx` & `src/main.tsx` | Top-level 3-panel split-screen layout, header telemetry (27 tables, 3 views, 6 validator rules, PGlite status), and application bootstrap. |
+resolveReference(
+  reference: Reference, owner: FhirResource, index: ReferenceIndex,
+  expectedTypes?: readonly string[],
+): ReferenceResolution;
+```
 
----
+`ReferenceResolution` is discriminated: `resolved` (target/key/type/owner), `external` (supported URL not loaded), `logical` (identifier-only), `unresolved` (missing internal), `invalid` (malformed/wrong-type/ambiguous). Relative, absolute/history, URN, Bundle fullUrl, contained owner scope, and identifier references are handled explicitly. Rewrite may alter only `Reference.reference`, never narrative, identifier, canonical, signature, or arbitrary strings.
 
-## 5. Security, Data Integrity & Quality Boundaries
+### 3.3 Assessment API
 
-1. **Parameterized SQL Writes:** All inserts/upserts into PGlite during synchronization use parameterized `$1, $2, ...` queries — never string interpolation of clinical or user-supplied values.
-2. **XSS-Safe Rendering:** No `dangerouslySetInnerHTML` for FHIR narratives, JSON attributes, or SQL outputs; all strings are rendered safely through React text nodes.
-3. **Synthetic Data Only:** All patient identifiers (NIK, IHS, MRN) in seeds are synthetic training records clearly labeled for educational interoperability testing.
+```ts
+validateFhirDataset(
+  dataset: NormalizedHospitalDataset,
+  options?: { profile: 'lab-r4'; nationalProfile?: string },
+): ValidationReport;
+```
+
+`ValidationReport` contains issues, six group summaries, and three assessment results (`coreR4`, `labProfile`, `national`), each with `pass|fail|not-assessed` and reason. No normalizer import from validator (avoid cycle); shared pure evidence metric may live in a separate contract helper.
+
+### 3.4 SQL and database API
+
+```ts
+type SqlValue = string | number | boolean | null | readonly SqlScalar[];
+
+evaluateFhirPath(
+  resource: unknown, expression: string, rootResource?: unknown,
+  context?: EvaluationContext,
+): unknown[];
+
+evaluateViewDefinition(
+  view: ViewDefinition, resources: readonly FhirResource[],
+  context?: EvaluationContext,
+): Record<string, SqlValue>[];
+
+flattenDatasetWithSqlOnFhir(
+  dataset: NormalizedHospitalDataset,
+): FlattenedDatasetResult;
+
+initPgliteDatabase(existingInstance?: PGlite): Promise<PGlite>;
+syncDatasetsToPglite(
+  db: PGlite, datasets: readonly NormalizedHospitalDataset[],
+): Promise<void>;
+
+resolveAndMergeDuplicatePatient(
+  db: PGlite | null, dataset: NormalizedHospitalDataset,
+  duplicatePatientId: string, targetMasterPatientId: string,
+): Promise<{ updatedDataset: NormalizedHospitalDataset; mergedPatient: Patient }>;
+```
+
+### 3.5 ViewDefinition separation
+
+Portable ViewDefinition follows SOF-2 (`resourceType`, resource, name, status, select, optional where/constant, standard columns with name/path/type/collection/tags). Local metadata is separate:
+
+```ts
+type ProjectionDefinition = {
+  view: ViewDefinition;
+  targetTable: TableName;
+  implementationStatus: 'implemented' | 'partial' | 'not-assessed';
+  sourcePolicy: 'resource' | 'claim-item';
+};
+```
+
+`targetTable`, national adoption, and implementation status must not be inserted into portable ViewDefinition. No private `splitType`, ad-hoc `+` coercion, or unknown-expression-to-null fallback.
+
+## 4. Normalization mapping and invariants
+
+- Every local code records source system/code/display, target system/code/display, mapping status, and evidence. Official namespaces cannot host invented DRG, inpatient subtype, comorbidity, or room codes.
+- `Consent` satisfies `ppc-1` with real policy/policyRule and correct category binding; legal policy claims remain synthetic.
+- `CoverageEligibilityResponse.request` points to contained CER `#eligibility-request`; outcome/inforce never derive from Claim adjudication.
+- Local deterministic transaction uses `PUT ResourceType/id`; imported POST uses type-level URL, body, and server identity rules. Bundle fullUrls are not server-issued IDs.
+- `Organization` address uses `work` or omitted use; Patient may use `home`. Patient IHS namespace is evidence-qualified; synthetic logical IDs are not MPI results.
+- MedicationType uses national valueCodeableConcept shape and named system only where source evidence exists; KFA values remain unverified without authoritative lookup.
+- Optional empty arrays/objects/strings are omitted. `false`, `0`, and explicit zero quantity remain values. No `||` fallback that changes zero.
+- Financial arithmetic uses exact decimal and final overflow/finite/nonnegative checks. `ChargeItem.priceOverride` is total, never multiplied by quantity again. `Claim.item.net = quantity × unitPrice × factor` only in selected lab profile.
+- Duplicate patient merge is identity graph operation: reject same ID/wrong type/cycle/ambiguity; update all typed references, named handles, Bundle, store, and DB atomically; preserve replaced-by provenance and idempotency.
+
+## 5. Six application validation groups
+
+These stable groups are navigation/report IDs, not official HL7 rules:
+
+1. **Mandatory/cardinality:** all supported resources, contained resources, Bundle, nested arrays, primitive format, choice exclusivity, and binding strength. Optional core is not over-required; identifier-only Reference and text-only permitted concepts remain valid.
+2. **Observation:** actual `obs-3`, `obs-6`, `obs-7`, value/absence choices, component rules. Matching root/component code is core error; different-code root + component may be valid. BP no-root rule is `lab-r4` only.
+3. **Composition:** recursive `cmp-1 = text.exists() or entry.exists() or section.exists()`; `cmp-2` forbids entry with emptyReason; narrative XHTML and nested sections validated.
+4. **Evidence/reference:** typed resolve, Bundle/fullUrl/URN/contained scope, duplicate identity, same-patient/same-encounter only where `lab-r4` requires, Encounter diagnosis, medication chain, Claim item links, eligibility request.
+5. **Financial reconciliation:** selected lab equations, currencies, missing amount vs zero, duplicate category, response/EOB selection, addItem benefit exactly once. Never labels these equations universal R4.
+6. **Bundle/HTTP contract:** bdl-1/2/3/4/5/7/8 and supplied type rules; request/body presence, POST/PUT identity, fullUrl and reference resolution; PATCH/HEAD are valid methods where capability is declared. Client entry ordering is accepted.
+
+A group passes only when no error exists in its scope. Informational/unassessed notices remain visible.
+
+## 6. SQL-on-FHIR v2 flattening contract
+
+### 6.1 Evaluation semantics
+
+- Sibling selections at every level are Cartesian products; an empty inner branch yields zero rows.
+- Union branches have identical ordered schema and retain parent/sibling context. `forEachOrNull` emits every descendant column as null, not `{}`.
+- Scalar: empty→null; singleton→typed scalar; multiple with `collection` absent/false→typed error; collection true→declared collection serialized as JSONB.
+- `getResourceKey()` and typed/untyped `getReferenceKey()` return matching table-scoped identity; target resource type is separate. Claim item key: `%resource.getResourceKey() & '-' & sequence.toString()`.
+- R4 model identity is preserved: Period is not dateTime, Quantity is not inferred from object shape, and `performed.ofType(dateTime)` is empty for performedPeriod.
+- `where`, `constant`, path predicates, escaped literals, boolean/number types, `%resource` context, and supported SOF functions follow model-aware FHIRPath. Unsupported syntax is a structured error with view/column/path.
+- Resource source identity is carried internally; no bare-id search. Claim-item `raw_fhir` is full Claim plus sequence, and optional raw item may be stored separately.
+- Summary `first()` columns declare deterministic, lossy selection and match system + code where semantic identity requires it. Raw FHIR remains complete.
+
+### 6.2 27 table registry
+
+One table is registered for each 26 resource types plus Claim detail:
+
+`fhir_organization`, `fhir_patient`, `fhir_practitioner`, `fhir_location`, `fhir_episode_of_care`, `fhir_service_request`, `fhir_encounter`, `fhir_consent`, `fhir_provenance`, `fhir_condition`, `fhir_procedure`, `fhir_observation`, `fhir_diagnostic_report`, `fhir_medication`, `fhir_medication_request`, `fhir_medication_dispense`, `fhir_composition`, `fhir_appointment`, `fhir_coverage`, `fhir_coverage_eligibility_response`, `fhir_account`, `fhir_charge_item`, `fhir_claim`, `fhir_claim_item`, `fhir_claim_response`, `fhir_explanation_of_benefit`, `fhir_measure_report`.
+
+Every table has source identity, hospital/dataset scope, and `raw_fhir JSONB`; Claim item has `claim_id`, positive `sequence`, unique `(claim_id, sequence)`, and parent Claim JSON. Do not add Bundle or contained CER tables. Use TEXT for legal FHIR strings/references/URIs/narratives, NUMERIC for decimals, and lexeme columns for partial date/time. Optional core projections are nullable; lab persistence constraints are checked before write.
+
+### 6.3 Three views
+
+1. `vw_fhir_clinical_diagnosis_recap`: cardinality-safe patient/encounter/condition recap; merged identity canonicalization is not MPI; organizations group by ID, not display.
+2. `vw_fhir_financial_claim_recap`: one contribution per Claim; deterministic latest eligible response (created instant then stable ID); no mixed-currency aggregation; unknown benefit remains unknown.
+3. `vw_fhir_clinical_to_claim_audit`: principal diagnosis follows Claim diagnosis type, not rank alone; selected EOB joins are explicit; composition evidence status is not auto-labeled complete.
+
+## 7. Catalog and curriculum boundary
+
+There are exactly 35 catalog entries and 12 curriculum lessons. They are not 35 resource modules. Catalog metadata must distinguish `resourceTypes`, `conceptTypes`, `projectionTables`, `labCapability` (`projected|envelope|embedded|partial|not-implemented`), `conformance`, and evidence-based national adoption. Counts derive from arrays, not literals.
+
+Five roadmap groups remain not implemented in this lab: HealthcareService/Device, AllergyIntolerance/Specimen/ImagingStudy, Schedule/Slot/Task, Invoice/Payment*, and PlanDefinition/GuidanceResponse/Measure definitions. Contained CER is eligibility support, not Invoice/Payment implementation. Terminology JavaScript dictionaries are not CodeSystem/ValueSet/ConceptMap resources. MeasureReport is illustrative unless a computable Measure is present.
+
+Each lesson defines objective, pinned source, resource/profile context, valid JSON, intentional invalid JSON, and inspectable JSON/validator/SQL evidence. Levels 1–5 are learning taxonomy, not certification. Curriculum must explicitly teach Resource vs DomainResource vs datatype vs logical model vs analytical table, identifier/reference/terminology, optionality and choices, obs-3/6/7, cmp-1/2, bdl-3, eligibility contained request, financial distinction, merge identity, and SOF cross-join/union/cardinality.
+
+## 8. Presentation, store, and security boundary
+
+At `xl` (1280px), preserve `LeftCurriculumPanel` (12 lessons/35 catalog), `CenterSandboxPanel` (raw→FHIR→SQL graph and simulations), and `RightInspectorPanel` (FHIR/Bundle/contained JSON, SQL/views, sourced issues) as defined in `layout.md`. Invalid preview and last-valid SQL revision must be explicit. Status text must name assessment profile and evidence state; never generic “DATASET CONFORMANT”. JSON/narrative is text-rendered; copy, keyboard focus, local overflow, and reduced motion are required.
+
+Store writes and merge are queued/atomic. Query values are parameterized. SQL console is local education only. No network call or credential belongs in synchronous validator/render. National submission is never implied by local PGlite commit.
+
+## 9. File-by-file Fase 2 work packages
+
+Write ownership is exclusive. Shared contracts land first; dependent packages may then run in parallel. Main integrates and verifies once after all packages land.
+
+| Task label / dependency | Exclusive target files | Deliverable |
+|---|---|---|
+| **ARCH-R4-CONTRACTS** / first | `src/types/fhir-global.ts`, `src/data/fhir-r4-conformance.ts` (new), `package.json`, `bun.lock` | Complete pinned R4 datatypes/backbones/choices, Resource vs DomainResource, contained CER, normalized/profile/assessment/projection/catalog contracts, provenance and dependency hashes. |
+| **CORE-REFERENCE-GRAPH** / contracts | `src/lib/fhir-references.ts` (new) | Typed builders, `(type,id)`/fullUrl index, owner-contained resolution, external/logical states, duplicate/cycle checks, Reference-only rewrite. |
+| **DATA-SOURCE-AND-TERMINOLOGY** / contracts | `src/data/simrs-normalization-seeds.ts` | Explicit raw medication/payor/order/eligibility/timestamp fields, source mappings, synthetic labels, local code systems, no city inference, corrected semantics. |
+| **CORE-NORMALIZATION-CUTOVER** / contracts + refs + seeds | `src/lib/fhir-normalizer.ts` | Explicit adapters/precedence, 26 resources, Bundle PUT contract, contained CER, Consent policy/category, MedicationType, omitted empties, eligibility/adjudication separation, N01–N12. |
+| **VALIDATION-R4-SIX-GROUPS** / contracts + refs | `src/lib/fhir-validator.ts` | Complete core/nested shape and six groups, official invariants/bindings, profile/national assessment states, source-bearing localized issues, financial/evidence metrics, safe unknown handling. |
+| **SOF2-RUNNER-AND-PROJECTIONS** / contracts + refs | `src/lib/sql-on-fhir-flattener.ts` | Model-aware FHIRPath/SOF-2 runner, cross-join/union/null/cardinality/typed-key semantics, 27 projections, raw source identity, decimals/temporal lexemes, EOB currency, no defaults. |
+| **PGLITE-SCHEMA-AND-MERGE** / contracts + refs + projections | `src/lib/pglite-db.ts` | Idempotent migrations, exact 27 tables/3 views, schema-parity registry, TEXT/NUMERIC/precision fixes, claim detail raw_fhir, cardinality-safe views, atomic snapshot/merge/rollback. |
+| **CURRICULUM-EVIDENCE-CUTOVER** / contracts | `src/data/curriculum-modules.ts`, `01_master_plan_architecture_and_fhir_normalization.md`, `02_data_schema_curriculum_and_ai_agent_prompt.md` | Honest 35-entry metadata, 12 lessons, five laws, SQL-vs-FHIRPath distinction, source-backed national evidence and historical/non-normative corrections. |
+| **UI-STORE-ASSESSMENT-CUTOVER** / contracts; core integration | `src/store/use-fhir-store.ts`, `src/components/StatusBadge.tsx`, `src/components/LeftCurriculumPanel.tsx`, `src/components/CenterSandboxPanel.tsx`, `src/components/RightInspectorPanel.tsx`, `src/App.tsx` | Call-site cutover, sourced assessment labels, invalid-preview/last-valid distinction, Bundle/contained inspection, derived counts, merge/override persistence, rule-group counts (not issue count). |
+| **QA-R4-SOF2-REGRESSIONS** / all contracts | `tests/fhir-lab.test.ts` | Full acceptance matrix §10; remove tests encoding wrong standards; no unrelated UI changes. |
+| **DOC-FINAL-TRACEABILITY** / all owners | `docs/spec.md`, `docs/README.md`, `docs/DOCUMENTATION_STATUS.md`, `.agents/HANDOFF.md`, `.agents/rules/00-master-manifest.md`, `.agents/rules/02-tech-and-architecture.md` | Record actual dispositions/evidence, synchronize names/counts/boundaries; do not fabricate verification. |
+
+`src/main.tsx`, styling, and unrelated layout remain unchanged unless a direct contract callsite requires it. No package owns another task's exclusive files.
+
+## 10. Acceptance and verification matrix
+
+### A. Models and standards
+
+- Compile positive/negative fixtures for all 26 resources, Bundle, contained CER, choices, primitive metadata, and nested cardinality; malformed `unknown` returns localized issues without throw.
+- Normal fixtures have no core errors under pinned R4 4.0.1; unassessed terminology/profile evidence remains visible. No national pass without named profile/version/environment.
+- Test optional core absence, text-only concepts where binding permits, identifier-only Reference, false/zero, omitted empty values, MedicationType valueCodeableConcept, exact namespaces, org-2, ppc-1, ces request target.
+- Test obs-7 matching root/component negative, different-code root/component positive, BP profile-only negative, UCUM system mismatch, absence reasons; cmp-1 nested-only positive, emptyReason-only negative, cmp-2 entry+emptyReason negative; Bundle bdl-3/request/body/identity/fullUrl and permutation positive.
+
+### B. Normalization, identity, and money
+
+- Change raw diagnosis/status/time/billing independently and confirm source mapping; explicit override wins; unrelated rows cannot collapse.
+- Jakarta commercial payer stays commercial; unsupported links are omitted, not invented. Reference rewrite changes only Reference.reference and detects duplicate identities.
+- Evidence cases cover wrong patient/encounter, missing diagnosis, broken medication chain, invalid Claim item and contained request. Merge rejects same ID/cycle/wrong type, updates every graph handle/Bundle/SQL, remains idempotent, and rolls back on injected persistence failure.
+- Money tests cover zero/decimal quantity and daysSupply, negatives/NaN/infinity/unsafe products, factor, missing amount/currency, duplicate adjudication categories, multiple addItems, all outcome states. ChargeItem total is not multiplied twice; added benefit counted exactly once.
+
+### C. SQL-on-FHIR
+
+- Root/nested sibling Cartesian product, empty forEach, complete outer-null descendants, union+parent/sibling context, schema mismatch rejection.
+- Scalar multiplicity errors, collection preservation, where/constant, typed literals/escaping, `%resource`, valid concatenation, unsupported syntax diagnostics, typed reference keys, Period vs dateTime, Quantity type, and no defaults.
+- Every executable catalog expression parses in its advertised context; prose/SQL expressions are labeled and not evaluated as FHIRPath.
+
+### D. Database and parity
+
+- Fresh and prior-instance migration is idempotent; exactly 27 tables and 3 canonical views exist; registry equals insert columns and information_schema.
+- All 27 tables, including Claim item, retain correct source JSON object; no `{}` fallback. Long legal strings/references, partial date/time, period times, offset/lexeme, NUMERIC fractional daysSupply round-trip.
+- Multiple responses/EOBs are cardinality-safe; views select deterministically and never mix currencies or count a Claim twice. Invalid preview cannot overwrite last-valid SQL.
+- 35 catalog entries, 12 lessons, five not-implemented groups, contained CER scope, and evidence-based national labels reconcile with actual capabilities.
+
+### E. Evidence ledger and gates
+
+Before declaring implementation complete, `docs/DOCUMENTATION_STATUS.md` records for every check: finding/test ID, input/scenario, standard/tool version, expected result, observed result, diagnostics, artifact path, and limitation. Required repository commands are `bun run typecheck`, `bun test`, `bun run build`, and integrated `bun run ci`; Main runs them after integration. Browser smoke covers all three hospitals, 12 lessons, JSON/Bundle/contained inspection, invalid simulation, merge/edit, and last-valid SQL behavior. Independent pinned R4 and SQL-on-FHIR fixtures are required; missing tooling is an unmet prerequisite, not a skipped pass.
+
+No statement may claim “100% FHIR”, national production readiness, or successful submission without actual evidence and authorization. Capability gaps remain explicit; no stubs, no placeholder implementations, no silent suppression.
+
+## 11. Change record
+
+- Reconciled 26 concrete resource types, separate Bundle, contained CER, 27 analytical tables, and three canonical `vw_` views.
+- Separated core R4, local `lab-r4`, SQL-on-FHIR, and SATUSEHAT assessment boundaries.
+- Defined typed contracts for normalizer, reference graph, six validation groups, SOF-2 flattener, PGlite, merge, UI/store, and security boundaries.
+- Corrected eligibility request target, Consent/Organization/MedicationType boundaries, financial semantics, SOF sibling/union/cardinality rules, temporal/decimal preservation, and no-default policy.
+- Added non-overlapping file-by-file work packages for coder, tester, reviewer, and security audit.
+- This document is a plan/specification update only; implementation and verification remain future work until evidence is recorded.

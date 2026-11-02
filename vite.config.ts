@@ -6,4 +6,14 @@ export default defineConfig({
   optimizeDeps: {
     exclude: ['@electric-sql/pglite'],
   },
+  server: {
+    port: 5173,
+    host: '127.0.0.1',
+    strictPort: true,
+  },
+  preview: {
+    port: 5173,
+    host: '127.0.0.1',
+    strictPort: true,
+  },
 });

@@ -418,7 +418,7 @@ export const ADVANCED_NORMALIZATION_LAWS: NormalizationLaw[] = [
         simrsColumns: 'kewarganegaraan ("WNI") & tipe_obat ("NC" Non-Racikan)',
         rawExample: '"WNI" & "NC"',
         fhirPath: 'Patient.extension[0] & Medication.extension[0]',
-        fhirValuePreview: 'citizenshipStatus="WNI" & MedicationType={ code: "NC", display: "Non-compound" }',
+        fhirValuePreview: 'citizenshipStatus="WNI" & MedicationType.valueCodeableConcept.coding={ system: "https://terminology.kemkes.go.id/CodeSystem/medication-type", code: "NC" }',
         fhirPathExpression: "extension.where(url='.../citizenshipStatus').first().valueCode",
         postgresColumn: 'fhir_patient.citizenship_code & fhir_medication.medication_type_code',
         resourceType: 'Medication',
@@ -750,6 +750,7 @@ COMMIT; -- Jika ada 1 yang gagal, semua di-ROLLBACK`,
   },
 ];
 
+export type CatalogLabCapability = 'projected' | 'envelope' | 'embedded' | 'partial' | 'not-implemented';
 export interface FhirModuleCatalogEntry {
   id: string;
   level: 'Level 1' | 'Level 2' | 'Level 3' | 'Level 4A' | 'Level 4B' | 'Level 4C' | 'Level 5';
@@ -762,6 +763,12 @@ export interface FhirModuleCatalogEntry {
   implementationBadge: ImplementationStatus;
   postgresTable: string;
   resourceType?: FhirResourceType;
+  resourceTypes?: FhirResourceType[];
+  conceptTypes?: string[];
+  projectionTables?: string[];
+  labCapability?: CatalogLabCapability;
+  conformance?: 'core-r4' | 'lab-r4' | 'sql-on-fhir' | 'not-assessed';
+  nationalAdoptionEvidence?: string;
   description: string;
   simrsSource?: string;
   fhirMappingPath?: string;
@@ -769,7 +776,8 @@ export interface FhirModuleCatalogEntry {
   postgresTargetColumns?: string;
 }
 
-export const FHIR_ALL_MODULES_CATALOG: FhirModuleCatalogEntry[] = [
+type RawCatalogEntry = Omit<FhirModuleCatalogEntry, 'resourceTypes' | 'conceptTypes' | 'projectionTables' | 'labCapability' | 'conformance' | 'nationalAdoptionEvidence'>;
+const RAW_CATALOG: RawCatalogEntry[] = [
   // LEVEL 1: FOUNDATION
   {
     id: 'cat-resource',
@@ -1078,7 +1086,7 @@ export const FHIR_ALL_MODULES_CATALOG: FhirModuleCatalogEntry[] = [
     description: 'Master obat berbasis kode Kamus Farmasi & Alkes (KFA) Kemenkes RI.',
     simrsSource: 'kode_obat_kfa (93000001 Paracetamol / 93000003 Aspirin)',
     fhirMappingPath: 'Medication.code (KFA) & extension[MedicationType] (NC)',
-    fhirPathExpression: "code.coding.first().code & extension[MedicationType].valueCoding.code",
+    fhirPathExpression: "code.coding.first().code & extension.where(url='https://fhir.kemkes.go.id/r4/StructureDefinition/MedicationType').first().valueCodeableConcept.coding.first().code",
     postgresTargetColumns: 'fhir_medication (id, code_value, code_display, form_code, medication_type_code)',
   },
   {
@@ -1323,14 +1331,14 @@ export const FHIR_ALL_MODULES_CATALOG: FhirModuleCatalogEntry[] = [
     id: 'cat-invoice-payment',
     level: 'Level 4C',
     moduleCategory: 'Financial — Payment',
-    componentName: 'CoverageEligibilityRequest, Invoice, PaymentNotice, PaymentReconciliation',
+    componentName: 'Invoice, PaymentNotice, PaymentReconciliation',
     indonesiaStatus: 'NOT_YET',
     indonesiaNote: 'NOT YET — Belum diimplementasikan di SATUSEHAT',
     labStatus: 'NOT_YET',
     labNote: 'NOT YET — Tahap lanjutan rekonsiliasi pencairan bank setelah EOB',
     implementationBadge: 'PIONEER_GLOBAL_FHIR',
     postgresTable: '— (Non-projected / Roadmap Extension)',
-    description: 'Permintaan cek eligibilitas awal, faktur tagihan komersial, dan rekonsiliasi pembayaran.',
+    description: 'Faktur tagihan komersial dan rekonsiliasi pembayaran. CoverageEligibilityRequest tersedia sebagai contained resource di CoverageEligibilityResponse, tanpa tabel tersendiri.',
   },
 
   // LEVEL 5: CLINICAL REASONING & QUALITY
@@ -1366,3 +1374,13 @@ export const FHIR_ALL_MODULES_CATALOG: FhirModuleCatalogEntry[] = [
     description: 'Aturan Clinical Decision Support (CDS) dan definisi rumus indikator mutu.',
   },
 ];
+
+export const FHIR_ALL_MODULES_CATALOG: FhirModuleCatalogEntry[] = RAW_CATALOG.map((entry): FhirModuleCatalogEntry => ({
+  ...entry,
+  resourceTypes: entry.resourceType ? [entry.resourceType as FhirResourceType] : [],
+  conceptTypes: entry.resourceType ? ['Resource'] : ['CodeableConcept', 'datatype'],
+  projectionTables: entry.postgresTable.startsWith('fhir_') ? entry.postgresTable.split(/\s*&\s*/).map(table => table.trim()).filter(table => table.startsWith('fhir_')) : [],
+  labCapability: entry.postgresTable.startsWith('fhir_') ? 'projected' : entry.id === 'cat-bundle' ? 'envelope' : entry.id.includes('eligibility') ? 'embedded' : entry.labStatus === 'IMPLEMENTED' ? 'partial' : 'not-implemented',
+  conformance: entry.fhirPathExpression ? 'sql-on-fhir' : entry.resourceType ? 'core-r4' : 'not-assessed',
+  nationalAdoptionEvidence: entry.indonesiaNote,
+}));

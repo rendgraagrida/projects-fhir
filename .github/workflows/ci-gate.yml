@@ -1,0 +1,52 @@
+# ==============================================================
+# Global HL7 FHIR Lab — Enterprise CI Quality Gate & Automated Testing
+# The job name below is the stable branch-protection check contract.
+# ==============================================================
+name: CI Quality Gate & Automated Testing
+
+on:
+  push:
+    branches: [ main, development ]
+  pull_request:
+    branches: [ main, development ]
+    types: [ opened, synchronize, reopened, ready_for_review ]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ci-gate:
+    name: "CI Gate: Security, Rules, Tests & Build"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: 1. Checkout Codebase
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: 2. Setup Bun Runtime
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "latest"
+
+      - name: 3. Cache Bun Dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: 4. Install Dependencies
+        run: bun install --frozen-lockfile
+
+      - name: 5. Execute Canonical CI Verification Gate
+        run: bun scripts/ci.ts
