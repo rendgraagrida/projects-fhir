@@ -8,10 +8,9 @@ import { useFhirStore } from '../store/use-fhir-store';
 import type { FhirResourceType, NormalizedHospitalDataset, SandboxClinicalFinancialOverrides, SimrsHospitalSeed } from '../types/fhir-global';
 
 const MODE_OPTIONS = [
-  { value: 'sandbox' as const, label: 'SIMRS → FHIR', fullTitle: 'Normalisasi Data SIMRS ke Standar HL7 FHIR', icon: Database },
+  { value: 'sandbox' as const, label: 'SIMRS → FHIR', fullTitle: 'Normalisasi Data SIMRS ke Standar HL7 FHIR & Evidence Chain', icon: Database },
   { value: 'laws' as const, label: '12 Hukum', fullTitle: '12 Hukum Normalisasi HL7 FHIR (5 Fondasi + 7 Lanjutan)', icon: Scale },
   { value: 'rosetta' as const, label: 'SQL ⇄ FHIR', fullTitle: 'SQL ⇄ FHIR Rosetta Stone (Komparasi Kode & Konsep Nyata)', icon: ArrowLeftRight },
-  { value: 'evidence' as const, label: 'Evidence Chain', fullTitle: 'Clinical to Financial Evidence Chain Editor & Invariant Simulator', icon: ShieldCheck },
   { value: 'graph' as const, label: 'FHIR Graph', fullTitle: 'Visualisasi Graph Relasi Resource FHIR (@xyflow/react)', icon: GitMerge },
   { value: 'sql' as const, label: 'SQL Console', fullTitle: 'Interactive PostgreSQL PGlite SQL Console', icon: Table2 },
   { value: 'modules' as const, label: 'Matriks Modul', fullTitle: 'Matriks Lengkap Status 35 Modul & Komponen HL7 FHIR (Level 1-5)', icon: Layers },
@@ -55,7 +54,7 @@ export function CenterSandboxPanel() {
       {centerMode === 'sandbox' && <NormalizationSandbox />}
       {centerMode === 'laws' && <NormalizationLawsDeepDive />}
       {centerMode === 'rosetta' && <SqlFhirRosettaView />}
-      {centerMode === 'evidence' && <EvidenceEditor />}
+      {centerMode === 'evidence' && <NormalizationSandbox />}
       {centerMode === 'graph' && <ResourceGraph />}
       {centerMode === 'sql' && <SqlConsole />}
       {centerMode === 'modules' && <FhirModulesStatusMatrix />}
@@ -267,23 +266,12 @@ function NormalizationSandbox() {
         </section>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3.5">
-        <div>
-          <div className="flex items-center gap-2 text-xs font-bold text-slate-100">
-            <ShieldCheck className="h-4 w-4 text-emerald-300" /> Clinical → Financial Evidence Chain & Simulator
-          </div>
-          <p className="mt-0.5 text-[10px] text-slate-400">
-            Pelajari keterlacakan alur medis dari rekam kunjungan (Encounter) ke klaim (Claim & EOB), komparasi Sebelum vs Setelah FHIR, serta uji simulator invariant secara live di tab <b>Evidence Chain</b>.
-          </p>
+      <section className="rounded-lg border border-emerald-500/30 bg-slate-950/50 p-3.5">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-xs font-bold text-emerald-300">3. Rantai Bukti Klinis ke Klaim & Komparasi Before vs After</h2>
         </div>
-        <button
-          type="button"
-          onClick={() => useFhirStore.getState().setCenterMode('evidence')}
-          className="inline-flex items-center gap-1.5 rounded bg-emerald-400 px-3 py-1.5 text-[10px] font-bold text-slate-950 transition hover:bg-emerald-300"
-        >
-          <ShieldCheck className="h-3.5 w-3.5" /> Buka Tab Evidence Chain →
-        </button>
-      </div>
+        <EvidenceEditor />
+      </section>
     </div>
   );
 }
