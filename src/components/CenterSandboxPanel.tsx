@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, BadgeDollarSign, CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Clock, Database, FileText, GitMerge, Info, Layers, Link2, Play, RefreshCcw, Scale, Search, ShieldCheck, SlidersHorizontal, Table2, Unlink, X } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, BadgeDollarSign, CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Clock, Database, FileText, GitMerge, Info, Layers, Link2, Pause, Play, RefreshCcw, Scale, Search, ShieldCheck, SlidersHorizontal, Table2, Unlink, X } from 'lucide-react';
 import { Background, ReactFlow, type Edge, type Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ALL_NORMALIZATION_LAWS, FHIR_ALL_MODULES_CATALOG, SQL_TO_FHIR_CHEAT_SHEET } from '../data/curriculum-modules';
@@ -1970,9 +1970,73 @@ function EvidenceEditor() {
   );
 }
 
+const GUIDED_FLOW_STAGES = [
+  {
+    step: 1,
+    title: '1. Pasien & Kunjungan Utama (Encounter)',
+    shortTitle: '1. Pasien & Kunjungan',
+    description: 'Menghubungkan identitas Pasien, Fasilitas RS, Dokter, dan Kunjungan Rawat (Encounter).',
+    types: ['Organization', 'Patient', 'Practitioner', 'Location', 'Encounter'] as FhirResourceType[],
+  },
+  {
+    step: 2,
+    title: '2. Diagnosa, Tindakan & Tanda Vital (Clinical)',
+    shortTitle: '2. Diagnosa & Tindakan',
+    description: 'Encounter menaungi diagnosa Condition (ICD-10), tindakan Procedure (ICD-9-CM), dan tanda vital Observation (LOINC).',
+    types: ['Organization', 'Patient', 'Practitioner', 'Location', 'Encounter', 'Condition', 'Procedure', 'Observation', 'ServiceRequest'] as FhirResourceType[],
+  },
+  {
+    step: 3,
+    title: '3. Farmasi & Resume Medis Pulang (Medications & Composition)',
+    shortTitle: '3. Farmasi & Resume',
+    description: 'Permintaan obat (MedicationRequest), serah obat (MedicationDispense), dan dokumen resume pulang (Composition) ber-invarian cmp-1.',
+    types: ['Organization', 'Patient', 'Practitioner', 'Location', 'Encounter', 'Condition', 'Procedure', 'Observation', 'ServiceRequest', 'Medication', 'MedicationRequest', 'MedicationDispense', 'Composition'] as FhirResourceType[],
+  },
+  {
+    step: 4,
+    title: '4. Pembebanan Biaya Layanan (ChargeItem)',
+    shortTitle: '4. Biaya Layanan',
+    description: 'Tindakan, kamar rawat, dan obat dibebankan sebagai ChargeItem ber-supportingInformation ke resume medis.',
+    types: ['Organization', 'Patient', 'Practitioner', 'Location', 'Encounter', 'Condition', 'Procedure', 'Observation', 'ServiceRequest', 'Medication', 'MedicationRequest', 'MedicationDispense', 'Composition', 'ChargeItem', 'Account'] as FhirResourceType[],
+  },
+  {
+    step: 5,
+    title: '5. Penyusunan Berkas Klaim (Claim)',
+    shortTitle: '5. Berkas Klaim',
+    description: 'Klaim mengintegrasikan diagnosa primer/sekunder, tindakan, dan total tagihan rupiah.',
+    types: ['Organization', 'Patient', 'Practitioner', 'Location', 'Encounter', 'Condition', 'Procedure', 'Observation', 'ServiceRequest', 'Medication', 'MedicationRequest', 'MedicationDispense', 'Composition', 'ChargeItem', 'Account', 'Coverage', 'Claim'] as FhirResourceType[],
+  },
+  {
+    step: 6,
+    title: '6. Keputusan Penjamin (ClaimResponse & Adjudication)',
+    shortTitle: '6. Adjudikasi BPJS',
+    description: 'Penjamin (BPJS/Asuransi) meng-adjudikasi klaim dan menentukan manfaat yang disetujui (benefit).',
+    types: ['Organization', 'Patient', 'Practitioner', 'Location', 'Encounter', 'Condition', 'Procedure', 'Observation', 'ServiceRequest', 'Medication', 'MedicationRequest', 'MedicationDispense', 'Composition', 'ChargeItem', 'Account', 'Coverage', 'Claim', 'ClaimResponse'] as FhirResourceType[],
+  },
+  {
+    step: 7,
+    title: '7. Rekonsiliasi Akhir Finansial (ExplanationOfBenefit / EOB)',
+    shortTitle: '7. EOB Selesai',
+    description: 'Ringkasan audit final menghitung selisih nominal diajukan vs disetujui (variance) secara transparan.',
+    types: ['Organization', 'Patient', 'Practitioner', 'Location', 'Encounter', 'Condition', 'Procedure', 'Observation', 'ServiceRequest', 'Medication', 'MedicationRequest', 'MedicationDispense', 'Composition', 'ChargeItem', 'Account', 'Coverage', 'Claim', 'ClaimResponse', 'ExplanationOfBenefit'] as FhirResourceType[],
+  },
+];
+
+const resourceColumnIndex = (type: FhirResourceType): number => {
+  if (type === 'Organization' || type === 'Patient' || type === 'Practitioner') return 0; // Kolom 0 (Admin)
+  if (type === 'Location' || type === 'EpisodeOfCare' || type === 'Encounter' || type === 'Consent') return 1; // Kolom 1 (Kunjungan)
+  if (type === 'ServiceRequest' || type === 'Procedure' || type === 'Condition' || type === 'Observation' || type === 'DiagnosticReport') return 2; // Kolom 2 (Klinis)
+  if (type === 'Medication' || type === 'MedicationRequest' || type === 'MedicationDispense' || type === 'Composition') return 3; // Kolom 3 (Farmasi & Resume)
+  if (type === 'Coverage' || type === 'CoverageEligibilityResponse' || type === 'Account' || type === 'ChargeItem' || type === 'Claim') return 4; // Kolom 4 (Billing & Klaim)
+  return 5; // Kolom 5 (Adjudikasi & EOB)
+};
+
 function ResourceGraph() {
   const activeDataset = useFhirStore((state) => state.activeDataset);
   const selectResource = useFhirStore((state) => state.selectResource);
+  const [isFullGraphMode, setIsFullGraphMode] = useState<boolean>(false);
+  const [guidedStep, setGuidedStep] = useState<number>(1);
+  const [isAutoPlaying, setIsAutoPlaying] = useState<boolean>(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<number>(-1);
   const [manuallyClickedEdgeIds, setManuallyClickedEdgeIds] = useState<Set<string>>(new Set());
@@ -1980,24 +2044,43 @@ function ResourceGraph() {
   useEffect(() => {
     setSelectedNodeId(null);
     setActiveStep(-1);
+    setGuidedStep(1);
+    setIsAutoPlaying(false);
     setManuallyClickedEdgeIds(new Set());
   }, [activeDataset?.hospitalId]);
 
+  // Auto-play stepper alur setiap 3.5 detik jika aktif
+  useEffect(() => {
+    if (!isAutoPlaying) return;
+    const autoTimer = setInterval(() => {
+      setGuidedStep((prev) => {
+        if (prev < GUIDED_FLOW_STAGES.length) return prev + 1;
+        setIsAutoPlaying(false);
+        return prev;
+      });
+    }, 3500);
+    return () => clearInterval(autoTimer);
+  }, [isAutoPlaying]);
+
   const { allNodes, allEdges, adjacency } = useMemo(() => {
     const resources = activeDataset?.allResources ?? [];
-    const allNodes: Node<{ resourceType: FhirResourceType; resourceId: string }>[] = resources.map((resource, index) => {
+    const columnCounts = [0, 0, 0, 0, 0, 0];
+
+    const allNodes: Node<{ resourceType: FhirResourceType; resourceId: string }>[] = resources.map((resource) => {
       const domain = resourceDomain(resource.resourceType);
+      const col = resourceColumnIndex(resource.resourceType);
+      const row = columnCounts[col]++;
       return {
         id: `${resource.resourceType}/${resource.id}`,
-        position: { x: (index % 4) * 230, y: Math.floor(index / 4) * 110 },
+        position: { x: col * 270 + 40, y: row * 105 + 30 },
         data: {
           label: `${domain.label} · ${resource.resourceType}\n${resource.id}`,
           resourceType: resource.resourceType,
           resourceId: resource.id,
         },
         style: {
-          width: 195,
-          border: `1px solid ${domain.color}`,
+          width: 210,
+          border: `1.5px solid ${domain.color}`,
           borderRadius: 8,
           background: '#0f172a',
           color: '#e2e8f0',
@@ -2047,22 +2130,32 @@ function ResourceGraph() {
     return { allNodes, allEdges, adjacency };
   }, [activeDataset]);
 
-  // Urutan relasi yang terhubung dengan node terpilih (outgoing lebih dulu, lalu incoming)
-  const connectedEdgesList = useMemo(() => {
-    if (!selectedNodeId) return [];
-    const outgoing = allEdges.filter((e) => e.source === selectedNodeId);
-    const incoming = allEdges.filter((e) => e.target === selectedNodeId && e.source !== selectedNodeId);
-    return [...outgoing, ...incoming];
-  }, [allEdges, selectedNodeId]);
+  // Relasi yang aktif untuk tahap guided saat ini
+  const activeStageConfig = GUIDED_FLOW_STAGES[guidedStep - 1] ?? GUIDED_FLOW_STAGES[0];
+  const activeStageTypeSet = useMemo(() => new Set(activeStageConfig.types), [activeStageConfig]);
 
-  // Timer untuk menjalankan animasi satu per satu garis, lalu berubah merah setelah terlewati
+  // Urutan relasi yang terhubung dengan node terpilih (atau tahap saat ini)
+  const connectedEdgesList = useMemo(() => {
+    if (selectedNodeId) {
+      const outgoing = allEdges.filter((e) => e.source === selectedNodeId);
+      const incoming = allEdges.filter((e) => e.target === selectedNodeId && e.source !== selectedNodeId);
+      return [...outgoing, ...incoming];
+    }
+    // Jika tidak ada node spesifik, urutkan relasi yang ada di tahap saat ini
+    return allEdges.filter((e) => {
+      const srcType = e.source.split('/')[0] as FhirResourceType;
+      const tgtType = e.target.split('/')[0] as FhirResourceType;
+      return activeStageTypeSet.has(srcType) && activeStageTypeSet.has(tgtType);
+    });
+  }, [allEdges, selectedNodeId, activeStageTypeSet]);
+
+  // Timer animasi sekuensial satu per satu garis
   useEffect(() => {
-    if (!selectedNodeId || connectedEdgesList.length === 0) {
+    if (connectedEdgesList.length === 0) {
       setActiveStep(-1);
       return;
     }
 
-    // Mulai dari garis pertama (step 0)
     setActiveStep(0);
     const timer = setInterval(() => {
       setActiveStep((prev) => {
@@ -2072,55 +2165,91 @@ function ResourceGraph() {
         clearInterval(timer);
         return prev;
       });
-    }, 850);
+    }, 750);
 
     return () => clearInterval(timer);
-  }, [selectedNodeId, connectedEdgesList]);
+  }, [selectedNodeId, guidedStep, connectedEdgesList]);
 
   const { visibleNodes, visibleEdges, connectedCount } = useMemo(() => {
-    if (!selectedNodeId) {
-      // Keadaan awal: tidak ada garis yang berjalan otomatis
-      const defaultEdges = allEdges.map((edge) => {
-        const isManualRed = manuallyClickedEdgeIds.has(edge.id);
-        return {
-          ...edge,
-          animated: false,
-          style: {
-            stroke: isManualRed ? '#ef4444' : '#334155',
-            strokeWidth: isManualRed ? 2.5 : 1.2,
-          },
-        };
-      });
+    // Mode 1: Mode Seluruh Graph Penuh (hanya jika user memilih toggle Tampilkan Penuh)
+    if (isFullGraphMode && !selectedNodeId) {
+      const defaultEdges = allEdges.map((edge) => ({
+        ...edge,
+        animated: false,
+        style: {
+          stroke: manuallyClickedEdgeIds.has(edge.id) ? '#ef4444' : '#334155',
+          strokeWidth: manuallyClickedEdgeIds.has(edge.id) ? 2.5 : 1.2,
+        },
+      }));
       return { visibleNodes: allNodes, visibleEdges: defaultEdges, connectedCount: allNodes.length };
     }
 
-    const connected = new Set<string>();
-    connected.add(selectedNodeId);
-    const neighbors = adjacency.get(selectedNodeId);
-    if (neighbors) {
-      neighbors.forEach((n) => connected.add(n));
+    // Mode 2: Fokus pada Node Tertentu yang Diklik
+    if (selectedNodeId) {
+      const connected = new Set<string>();
+      connected.add(selectedNodeId);
+      const neighbors = adjacency.get(selectedNodeId);
+      if (neighbors) {
+        neighbors.forEach((n) => connected.add(n));
+      }
+
+      const filteredNodes = allNodes
+        .filter((node) => connected.has(node.id))
+        .map((node) => {
+          const isSelf = node.id === selectedNodeId;
+          const domain = resourceDomain(node.data.resourceType);
+          return {
+            ...node,
+            style: {
+              ...node.style,
+              border: isSelf ? '2px solid #22d3ee' : `1.5px solid ${domain.color}`,
+              background: isSelf ? '#083344' : '#0f172a',
+              boxShadow: isSelf ? '0 0 16px rgba(34, 211, 238, 0.45)' : undefined,
+            },
+          };
+        });
+
+      const filteredEdges = allEdges
+        .filter((edge) => connected.has(edge.source) && connected.has(edge.target))
+        .map((edge) => {
+          const edgeIndex = connectedEdgesList.findIndex((e) => e.id === edge.id);
+          const isManual = manuallyClickedEdgeIds.has(edge.id);
+          const isTraversed = isManual || (edgeIndex !== -1 && edgeIndex < activeStep);
+          const isCurrentlyWalking = edgeIndex !== -1 && edgeIndex === activeStep;
+
+          if (isCurrentlyWalking) {
+            return {
+              ...edge,
+              animated: true,
+              style: { stroke: '#22d3ee', strokeWidth: 3 },
+            };
+          }
+
+          if (isTraversed) {
+            return {
+              ...edge,
+              animated: false,
+              style: { stroke: '#ef4444', strokeWidth: 2.5 },
+            };
+          }
+
+          return {
+            ...edge,
+            animated: false,
+            style: { stroke: '#475569', strokeWidth: 1.5 },
+          };
+        });
+
+      return { visibleNodes: filteredNodes, visibleEdges: filteredEdges, connectedCount: filteredNodes.length };
     }
 
-    const filteredNodes = allNodes
-      .filter((node) => connected.has(node.id))
-      .map((node, index) => {
-        const isSelf = node.id === selectedNodeId;
-        const domain = resourceDomain(node.data.resourceType);
-        return {
-          ...node,
-          position: { x: (index % 3) * 250, y: Math.floor(index / 3) * 125 },
-          style: {
-            ...node.style,
-            border: isSelf ? '2px solid #22d3ee' : `1.5px solid ${domain.color}`,
-            background: isSelf ? '#083344' : '#0f172a',
-            boxShadow: isSelf ? '0 0 16px rgba(34, 211, 238, 0.45)' : undefined,
-          },
-        };
-      });
+    // Mode 3 (DEFAULT): Alur Terpandu Bertahap (Guided Step-by-Step Flow)
+    // Hanya menampilkan node pada tahap saat ini
+    const guidedNodes = allNodes.filter((node) => activeStageTypeSet.has(node.data.resourceType));
+    const guidedNodeIds = new Set(guidedNodes.map((n) => n.id));
 
-    // Garis berjalan satu per satu, dan garis yang sudah terlewati berubah menjadi merah (#ef4444)
-    const filteredEdges = allEdges
-      .filter((edge) => connected.has(edge.source) && connected.has(edge.target))
+    const guidedEdges = allEdges
+      .filter((edge) => guidedNodeIds.has(edge.source) && guidedNodeIds.has(edge.target))
       .map((edge) => {
         const edgeIndex = connectedEdgesList.findIndex((e) => e.id === edge.id);
         const isManual = manuallyClickedEdgeIds.has(edge.id);
@@ -2128,117 +2257,179 @@ function ResourceGraph() {
         const isCurrentlyWalking = edgeIndex !== -1 && edgeIndex === activeStep;
 
         if (isCurrentlyWalking) {
-          // Garis yang sedang berjalan aktif
           return {
             ...edge,
             animated: true,
-            style: {
-              stroke: '#22d3ee',
-              strokeWidth: 3,
-            },
+            style: { stroke: '#22d3ee', strokeWidth: 3 },
           };
         }
 
         if (isTraversed) {
-          // Garis yang sudah terlewati -> BERUBAH MENJADI WARNA MERAH
           return {
             ...edge,
             animated: false,
-            style: {
-              stroke: '#ef4444',
-              strokeWidth: 2.5,
-            },
+            style: { stroke: '#ef4444', strokeWidth: 2.5 },
           };
         }
 
-        // Garis yang belum dilewati (menunggu giliran)
         return {
           ...edge,
           animated: false,
-          style: {
-            stroke: '#475569',
-            strokeWidth: 1.5,
-          },
+          style: { stroke: '#334155', strokeWidth: 1.5 },
         };
       });
 
     return {
-      visibleNodes: filteredNodes,
-      visibleEdges: filteredEdges,
-      connectedCount: filteredNodes.length,
+      visibleNodes: guidedNodes,
+      visibleEdges: guidedEdges,
+      connectedCount: guidedNodes.length,
     };
-  }, [allNodes, allEdges, adjacency, selectedNodeId, connectedEdgesList, activeStep, manuallyClickedEdgeIds]);
-
-  const isWalkingActive = selectedNodeId && activeStep >= 0 && activeStep < connectedEdgesList.length;
-  const isAllTraversed = selectedNodeId && activeStep >= connectedEdgesList.length && connectedEdgesList.length > 0;
+  }, [allNodes, allEdges, adjacency, selectedNodeId, isFullGraphMode, activeStageTypeSet, connectedEdgesList, activeStep, manuallyClickedEdgeIds]);
 
   return (
     <div className="flex h-full min-h-[620px] flex-col">
-      <header className="mb-3 flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <div className="flex items-center gap-2 text-sm font-bold text-slate-100">
-            <GitMerge className="h-4 w-4 text-violet-300" /> Visualisasi Graph Relasi Resource FHIR
+      {/* Header Utama Kontrol Alur */}
+      <header className="mb-3 space-y-2.5">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2 text-sm font-bold text-slate-100">
+              <GitMerge className="h-4 w-4 text-violet-300" /> Visualisasi Graph Relasi FHIR Terpandu
+            </div>
+            <p className="mt-0.5 text-xs text-slate-400">
+              {isFullGraphMode
+                ? 'Mode Penuh: Menampilkan seluruh 35 modul dan 124 relasi global.'
+                : `Alur Bertahap: ${activeStageConfig.description}`}
+            </p>
           </div>
-          <p className="mt-0.5 text-xs text-slate-400">
-            Klik node mana pun untuk memulai penelusuran relasi sekuensial satu per satu garis (garis yang terlewati akan berubah merah).
-          </p>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Toggle Mode: Bertahap (Default) vs Penuh */}
+            <button
+              type="button"
+              onClick={() => {
+                setIsFullGraphMode((prev) => !prev);
+                setSelectedNodeId(null);
+              }}
+              className={`rounded border px-2.5 py-1 text-[10px] font-semibold transition ${
+                isFullGraphMode
+                  ? 'border-cyan-500 bg-cyan-400 text-slate-950 font-bold'
+                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600'
+              }`}
+            >
+              {isFullGraphMode ? '✓ Mode Penuh Aktif' : '🌐 Tampilkan Seluruh Graph (Mode Penuh)'}
+            </button>
+
+            {/* Legend Indikator Status Garis */}
+            <div className="flex items-center gap-2.5 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1 text-[9.5px]">
+              <span className="flex items-center gap-1 text-slate-300">
+                <span className="inline-block h-2 w-2 rounded-full bg-cyan-400 animate-pulse" /> Berjalan
+              </span>
+              <span className="flex items-center gap-1 text-slate-300">
+                <span className="inline-block h-2 w-2 rounded-full bg-rose-500" /> Terlewati (Merah)
+              </span>
+            </div>
+          </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Legend Indikator Status Garis */}
-          <div className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1 text-[10px]">
-            <span className="flex items-center gap-1 text-slate-300">
-              <span className="inline-block h-2 w-2 rounded-full bg-cyan-400 animate-pulse" /> Sedang Berjalan
-            </span>
-            <span className="flex items-center gap-1 text-slate-300">
-              <span className="inline-block h-2 w-2 rounded-full bg-rose-500" /> Sudah Terlewati (Merah)
-            </span>
-            <span className="flex items-center gap-1 text-slate-400">
-              <span className="inline-block h-2 w-2 rounded-full bg-slate-600" /> Belum
-            </span>
-          </div>
-
-          {selectedNodeId && (
-            <div className="flex items-center gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-2.5 py-1">
-              <span className="text-[10px] text-cyan-200">
-                Node: <b className="font-mono text-cyan-300">{selectedNodeId}</b>
-                {isWalkingActive && (
-                  <span className="ml-1.5 text-emerald-300">
-                    (Garis {activeStep + 1} dari {connectedEdgesList.length})
-                  </span>
-                )}
-                {isAllTraversed && (
-                  <span className="ml-1.5 text-rose-300 font-bold">
-                    (Selesai — {connectedEdgesList.length} garis merah)
-                  </span>
-                )}
-              </span>
+        {/* Stepper Bar Alur Bertahap (Default) */}
+        {!isFullGraphMode && !selectedNodeId && (
+          <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950/70 p-2">
+            {/* Navigasi Step */}
+            <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => setActiveStep(0)}
-                title="Putar ulang animasi penelusuran garis"
-                className="rounded bg-slate-800 px-2 py-0.5 text-[9px] font-bold text-cyan-200 transition hover:bg-slate-700"
+                disabled={guidedStep <= 1}
+                onClick={() => setGuidedStep((prev) => Math.max(1, prev - 1))}
+                className="rounded bg-slate-800 px-2.5 py-1 text-[10px] font-bold text-slate-300 transition hover:bg-slate-700 disabled:opacity-40"
               >
-                <RefreshCcw className="inline h-2.5 w-2.5 mr-1" /> Ulangi
+                ◀ Sebelumnya
+              </button>
+
+              <div className="flex items-center gap-1">
+                {GUIDED_FLOW_STAGES.map((stg) => (
+                  <button
+                    key={stg.step}
+                    type="button"
+                    onClick={() => {
+                      setGuidedStep(stg.step);
+                      setIsAutoPlaying(false);
+                    }}
+                    className={`rounded px-2 py-1 text-[9.5px] font-semibold transition ${
+                      guidedStep === stg.step
+                        ? 'bg-cyan-400 text-slate-950 font-bold shadow-sm'
+                        : guidedStep > stg.step
+                        ? 'bg-rose-950/60 text-rose-300 border border-rose-500/40'
+                        : 'bg-slate-900 text-slate-500 hover:text-slate-300'
+                    }`}
+                    title={stg.description}
+                  >
+                    {stg.shortTitle}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                disabled={guidedStep >= GUIDED_FLOW_STAGES.length}
+                onClick={() => setGuidedStep((prev) => Math.min(GUIDED_FLOW_STAGES.length, prev + 1))}
+                className="rounded bg-slate-800 px-2.5 py-1 text-[10px] font-bold text-slate-300 transition hover:bg-slate-700 disabled:opacity-40"
+              >
+                Berikutnya ▶
+              </button>
+            </div>
+
+            {/* Kontrol Putar Otomatis */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setIsAutoPlaying((prev) => !prev)}
+                className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[10px] font-bold transition ${
+                  isAutoPlaying
+                    ? 'bg-amber-400 text-slate-950 animate-pulse'
+                    : 'bg-slate-800 text-cyan-200 hover:bg-slate-700'
+                }`}
+              >
+                {isAutoPlaying ? <Pause className="h-3 w-3" /> : <Play className="h-3 w-3" />}
+                <span>{isAutoPlaying ? 'Jeda Alur' : '▶ Putar Alur Otomatis'}</span>
               </button>
               <button
                 type="button"
                 onClick={() => {
-                  setSelectedNodeId(null);
-                  setActiveStep(-1);
+                  setGuidedStep(1);
+                  setIsAutoPlaying(false);
+                  setActiveStep(0);
                   setManuallyClickedEdgeIds(new Set());
                 }}
-                className="rounded bg-cyan-400 px-2 py-0.5 text-[9px] font-bold text-slate-950 transition hover:bg-cyan-300"
+                title="Reset ke Tahap 1"
+                className="rounded bg-slate-900 p-1 text-slate-400 hover:text-slate-200 border border-slate-800"
               >
-                Tampilkan Semua ({allNodes.length})
+                <RefreshCcw className="h-3.5 w-3.5" />
               </button>
             </div>
-          )}
-        </div>
+          </div>
+        )}
+
+        {/* Banner Fokus Node Terpilih */}
+        {selectedNodeId && (
+          <div className="flex items-center justify-between gap-2 rounded-lg border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5">
+            <span className="text-[10px] text-cyan-200">
+              Fokus Relasi Node: <b className="font-mono text-cyan-300">{selectedNodeId}</b> ({connectedCount} node terhubung)
+            </span>
+            <button
+              type="button"
+              onClick={() => setSelectedNodeId(null)}
+              className="rounded bg-cyan-400 px-2.5 py-1 text-[9.5px] font-bold text-slate-950 transition hover:bg-cyan-300"
+            >
+              Kembali ke Alur Bertahap
+            </button>
+          </div>
+        )}
       </header>
+
+      {/* Canvas ReactFlow */}
       <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-slate-800 bg-slate-950">
         <ReactFlow
-          key={selectedNodeId ?? 'all-nodes'}
+          key={selectedNodeId ? `focus-${selectedNodeId}` : isFullGraphMode ? 'full-graph' : `step-${guidedStep}`}
           nodes={visibleNodes}
           edges={visibleEdges}
           fitView
@@ -2247,7 +2438,6 @@ function ResourceGraph() {
             setSelectedNodeId((prev) => (prev === node.id ? null : node.id));
           }}
           onEdgeClick={(_, edge) => {
-            // Klik langsung pada garis juga dapat menandai garis menjadi merah
             setManuallyClickedEdgeIds((prev) => {
               const next = new Set(prev);
               if (next.has(edge.id)) next.delete(edge.id);
