@@ -960,7 +960,111 @@ function EvidenceEditor() {
   const charges = activeDataset?.chargeItems ?? EMPTY_CHARGES;
   const [evidenceTab, setEvidenceTab] = useState<'after-fhir' | 'before-fhir'>('after-fhir');
   const [selectedStageIndex, setSelectedStageIndex] = useState<number | null>(0);
+  const [selectedSimrsStageIndex, setSelectedSimrsStageIndex] = useState<number | null>(0);
 
+  const simrsStages = useMemo(() => {
+    const rawTables = selectedSeed.rawSimrsTables;
+    const tableNames = Object.keys(rawTables);
+    return [
+      { label: '1. Pendaftaran & No RM', value: tableNames[0] ?? 'Tabel_Pasien' },
+      { label: '2. Poli / Bangsal Rawat', value: tableNames[1] ?? 'Tabel_Kunjungan' },
+      { label: '3. Farmasi & Tindakan', value: 'Modul Resep & Operasi' },
+      { label: '4. Resume Pulang Fisik', value: 'Berkas Kertas / PDF Scan' },
+      { label: '5. Kasir & Billing RS', value: tableNames[2] ?? 'Tabel_Billing' },
+      { label: '6. Koder E-Klaim Manual', value: 'Input Ulang Software E-Klaim' },
+      { label: '7. Verifikasi Manual BPJS', value: 'Pemeriksaan Berkas 14–30 Hari' },
+    ];
+  }, [selectedSeed]);
+
+  const simrsStageDetails = useMemo(() => {
+    const rawTables = selectedSeed.rawSimrsTables;
+    const tableNames = Object.keys(rawTables);
+    const pRow = rawTables[tableNames[0] ?? '']?.[0] ?? {};
+    const eRow = rawTables[tableNames[1] ?? '']?.[0] ?? {};
+    const bRow = rawTables[tableNames[2] ?? '']?.[0] ?? {};
+
+    return [
+      {
+        title: `1. Loket Pendaftaran & Nomor RM Lokal (${tableNames[0] ?? 'Tabel_Pasien'})`,
+        workflow: 'Pasien mendaftar di loket admisi. Sistem menerbitkan Nomor Rekam Medis (No RM) lokal yang hanya berlaku di rumah sakit ini, tanpa verifikasi identitas terpusat (Master Patient Index / IHS Kemenkes).',
+        vulnerability: 'Pasien darurat IGD sering dibuatkan No RM baru sehingga riwayat alergi obat, komorbiditas, dan tindakan sebelumnya terfragmentasi (split record / duplikasi rekam medis).',
+        fhirSolution: 'Resource Patient dengan identifier[] terstandarisasi (NIK, IHS) dan mekanisme Patient.link secara otomatis menyatukan catatan duplikat tanpa kehilangan histori.',
+        parameters: [
+          { name: 'no_rm / medicalRecordNumber', value: String(pRow.no_rm ?? pRow.medicalRecordNumber ?? pRow.mrn ?? 'MR-LOKAL-001'), desc: 'Nomor identitas rekam medis lokal rumah sakit.' },
+          { name: 'nama_lengkap / fullName', value: String(pRow.nama_lengkap ?? pRow.fullName ?? pRow.name ?? 'Pasien'), desc: 'Nama pasien dalam satu field string tanpa struktur HumanName terpisah.' },
+          { name: 'nik / nationalId', value: String(pRow.nik ?? pRow.nationalId ?? '—'), desc: 'Nomor induk kependudukan tanpa validasi namespace resmi.' },
+          { name: 'jenis_kelamin / gender', value: String(pRow.jenis_kelamin ?? pRow.gender ?? pRow.sex ?? '—'), desc: 'Format kode bervariasi (L/P, male/female, 1/2) antar SIMRS.' },
+        ],
+      },
+      {
+        title: `2. Poliklinik / Bangsal Rawat Inap (${tableNames[1] ?? 'Tabel_Kunjungan'})`,
+        workflow: 'Dokter mencatat pemeriksaan, diagnosa, dan instruksi perawatan di modul EMR rawat inap atau catatan medis terpisah. Diagnosa sering ditulis dalam teks bebas atau singkatan lokal.',
+        vulnerability: 'Data diagnosa tersimpan dalam tabel lokal tanpa kunci referensi langsung ke tagihan kasir, membuka celah manipulasi kode saat berkas masuk ke bagian keuangan.',
+        fhirSolution: 'Resource Encounter mengunci konteks kunjungan, dan Condition mengikat diagnosa dengan kode ICD-10 resmi yang merujuk Encounter secara immutable.',
+        parameters: [
+          { name: 'id_kunjungan / episodeId', value: String(eRow.id_kunjungan ?? eRow.episodeId ?? eRow.visit_key ?? 'ENC-001'), desc: 'Primary key kunjungan lokal rumah sakit.' },
+          { name: 'kode_diagnosa_utama', value: String(eRow.kode_diagnosa_utama ?? eRow.primaryCode ?? eRow.dx_primary ?? 'J18.9'), desc: 'Kode diagnosa primer tanpa URI terminologi global.' },
+          { name: 'kode_diagnosa_sekunder', value: String(eRow.kode_diagnosa_sekunder ?? eRow.secondaryCode ?? eRow.dx_secondary ?? 'E11.9'), desc: 'Diagnosa komorbiditas penyerta.' },
+          { name: 'kode_ruang / room', value: String(eRow.kode_ruang ?? eRow.room ?? eRow.room_code ?? 'WARD-01'), desc: 'String kode ruangan lokal RS (tidak standar).' },
+        ],
+      },
+      {
+        title: '3. Farmasi & Tindakan Medis (Pencatatan Parsial Terpisah)',
+        workflow: 'Resep obat diinput manual ke komputer apotek, dan tindakan bedah/intervensi dicatat di lembar laporan operasi manual atau sistem SIMRS terpisah.',
+        vulnerability: 'Unlinked Medication & Procedure: Resep yang diminta dan obat yang diserahkan tidak memiliki lifecycle tracking; rawan salah dispensing atau duplikasi tarif obat.',
+        fhirSolution: 'Procedure, MedicationRequest, dan MedicationDispense memisahkan siklus permintaan dan serah obat dengan kode KFA resmi serta satuan UCUM standar.',
+        parameters: [
+          { name: 'kode_tindakan', value: String(effective.procedureCode ?? '96.71'), desc: 'Kode prosedur tindakan diinput manual tanpa referensi dokter pelaksana.' },
+          { name: 'kode_obat_inventori', value: '93000001 (Paracetamol) / 93000003', desc: 'Kode master obat internal RS yang berbeda dengan katalog nasional KFA.' },
+          { name: 'aturan_pakai_teks', value: '3 x 1 tablet sesudah makan', desc: 'String teks bebas tanpa struktur dosageInstruction yang dapat dihitung mesin.' },
+        ],
+      },
+      {
+        title: '4. Resume Medis Pulang (Dokumen Fisik / PDF Lepas)',
+        workflow: 'Dokter DPJP menulis ringkasan keluar pasien di formulir kertas rekam medis atau mengetik ringkasan PDF lepas yang tersimpan di luar database klaim.',
+        vulnerability: '⚠️ Titik Terputus Utama: Berkas fisik sering tercecer, belum ditandatangani dokter, atau terlambat diisi saat bagian keuangan sudah mulai menyusun tagihan klaim.',
+        fhirSolution: 'Resource Composition digital ber-invarian cmp-1 & cmp-2 menjamin seluruh 5 seksi medis terisi lengkap sebelum berkas klaim dapat dibuat oleh sistem.',
+        parameters: [
+          { name: 'ringkasan_keluar_format', value: 'Formulir Kertas / Scan PDF Lepas', desc: 'Tidak terintegrasi secara relasional ke tabel database billing.' },
+          { name: 'tanda_tangan_dpjp', value: 'Tanda Tangan Basah Manual', desc: 'Memerlukan verifikasi fisik manual oleh verifikator BPJS.' },
+          { name: 'status_kelengkapan', value: 'Pending Tanda Tangan / Tercecer', desc: 'Penyebab nomor satu dispute pending klaim di rumah sakit.' },
+        ],
+      },
+      {
+        title: `5. Kasir & Billing RS (${tableNames[2] ?? 'Tabel_Billing'})`,
+        workflow: 'Petugas kasir memasukkan total biaya kamar, total tindakan, dan total obat secara manual ke modul billing berdasarkan kuitansi/lembar tagihan.',
+        vulnerability: '⚠️ Ghost Billing & Selisih Nominal: Kasir dapat menagihkan tindakan yang tidak pernah tercatat di rekam medis dokter, atau total tagihan berselisih dengan rincian layanan.',
+        fhirSolution: 'Setiap rupiah di Claim.total diverifikasi otomatis terhadap agregasi ChargeItem.priceOverride dan Claim.item.net yang menunjuk bukti rekam medis otentik.',
+        parameters: [
+          { name: 'total_kamar', value: formatIdr(bRow.total_kamar ?? bRow.roomAmount ?? bRow.biaya_kamar ?? 2250000), desc: 'Nominal tagihan kamar diinput manual oleh kasir.' },
+          { name: 'total_tindakan', value: formatIdr(bRow.total_tindakan ?? bRow.procedureAmount ?? bRow.biaya_tindakan ?? 2500000), desc: 'Nominal tagihan tindakan tanpa link ke lembar operasi.' },
+          { name: 'total_obat', value: formatIdr(bRow.total_obat ?? bRow.medicationAmount ?? bRow.biaya_obat ?? 125000), desc: 'Nominal obat akumulasi kasir.' },
+        ],
+      },
+      {
+        title: '6. Koder E-Klaim RS (Entri Ulang Kode INA-CBG Manual)',
+        workflow: 'Petugas koder membaca tumpukan berkas fisik rekam medis, lalu mengetik ulang kode diagnosa ICD-10 dan prosedur ICD-9-CM ke aplikasi bridging E-Klaim.',
+        vulnerability: 'Human error saat re-entry kode, keterlambatan koding berhari-hari, dan potensi upcoding tanpa sengaja karena koder tidak melihat konteks lengkap rekam medis.',
+        fhirSolution: 'Resource Claim menyusun paket penagihan INA-CBG secara otomatis dari resource Condition dan Procedure asli tanpa ketik ulang manual.',
+        parameters: [
+          { name: 'drg_code / cbg_code', value: String(bRow.drg_code ?? bRow.packageCode ?? bRow.cbg_code ?? 'DRG-RESP-MCC'), desc: 'Kode tarif paket INA-CBG hasil pengelompokan koder manual.' },
+          { name: 'status_pengajuan', value: 'Siap Dikirim ke Verifikator BPJS', desc: 'Klaim dikirim terpisah dari sistem rekam medis EMR.' },
+          { name: 'metode_koding', value: 'Input Manual oleh Koder Berkas', desc: 'Rentan salah ketik dan proses koding lambat.' },
+        ],
+      },
+      {
+        title: '7. Verifikasi Manual BPJS / Asuransi (Proses 14–30 Hari)',
+        workflow: 'Verifikator BPJS mencocokkan tumpukan berkas kertas/scan satu per satu dengan data tagihan. Berkas yang tidak sinkron akan dikembalikan (dispute/pending).',
+        vulnerability: 'Rumah sakit mengalami penundaan pencairan dana (cash flow terhambat) bernilai miliaran rupiah akibat proses verifikasi manual yang lambat dan dispute berkas.',
+        fhirSolution: 'Resource ClaimResponse dan ExplanationOfBenefit memvalidasi kelengkapan berkas secara real-time dan otomatis (straight-through processing).',
+        parameters: [
+          { name: 'waktu_pencairan_dana', value: '14 s/d 30 Hari Kalender', desc: 'Proses verifikasi berkas manual membutuhkan waktu lama.' },
+          { name: 'status_klaim_bpjs', value: 'Potensi Pending / Dispute Berkas', desc: 'Klaim dikembalikan jika lembar resume dokter tidak lengkap.' },
+          { name: 'rekonsiliasi_selisih', value: 'Rekonsiliasi Manual di Akhir Bulan', desc: 'Audit pembukuan selisih tarif memerlukan waktu berhari-hari.' },
+        ],
+      },
+    ];
+  }, [selectedSeed, effective]);
   const setOverride = (key: keyof SandboxClinicalFinancialOverrides, value: boolean | number | string) =>
     void updateOverrides({ [key]: value } as Partial<SandboxClinicalFinancialOverrides>);
   const monetary = (key: 'roomUnitPriceIdr' | 'procedurePriceIdr' | 'medicationPriceIdr' | 'approvedRoomBenefitIdr' | 'approvedProcedureBenefitIdr' | 'approvedMedicationBenefitIdr') =>
@@ -1224,6 +1328,201 @@ function EvidenceEditor() {
               </p>
             </div>
           </div>
+          {/* Interactive 7 Stages Alur SIMRS: Serpentine Flow (Kiri -> Kanan, Sambung Turun di Kanan Terputus, lalu Kanan -> Kiri) */}
+          <div className="rounded-lg border border-rose-500/30 bg-slate-950/60 p-3.5 space-y-2.5">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-bold text-rose-300 flex items-center gap-1.5">
+                <Unlink className="h-4 w-4 text-rose-400" />
+                <span>Alur Kerja SIMRS Konvensional (Silo Workflow)</span>
+              </div>
+              <span className="text-[10px] text-slate-400">Klik tahapan untuk melihat rincian tabel SIMRS & celah kerapuhan</span>
+            </div>
+
+            {/* Baris 1: Alur Layanan Medis Silo (Kiri ke Kanan: 1 -> 2 -> 3 -> 4) */}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4 items-center">
+              {simrsStages.slice(0, 4).map((stage, idx) => {
+                const isSelected = selectedSimrsStageIndex === idx;
+                return (
+                  <div key={stage.label} className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSimrsStageIndex((prev) => (prev === idx ? null : idx))}
+                      className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                        isSelected
+                          ? 'border-rose-400 bg-rose-950/70 shadow-md ring-1 ring-rose-400/50'
+                          : 'border-slate-800 bg-slate-900/80 hover:border-slate-600'
+                      }`}
+                      title={`SIMRS Langkah ${idx + 1}: ${stage.label}`}
+                    >
+                      <span className="block text-[9px] text-slate-500">{stage.label}</span>
+                      <span className={`mt-1 block truncate text-[10px] font-semibold ${isSelected ? 'text-rose-200' : 'text-slate-300'}`}>
+                        {stage.value}
+                      </span>
+                    </button>
+                    {idx < 3 && <ArrowRight className="hidden xl:block h-3.5 w-3.5 shrink-0 text-slate-600" />}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Titik Terputus di Ujung Kanan */}
+            <div className="hidden xl:grid grid-cols-4 gap-2">
+              <div className="col-start-4 flex items-center justify-center py-1">
+                <div className="flex items-center gap-1.5 rounded-full border border-rose-500/40 bg-rose-950/60 px-2.5 py-0.5 text-[9px] font-bold text-rose-300">
+                  <Unlink className="h-3 w-3 text-rose-400" />
+                  <span>⚠️ Rantai Terputus (Input Billing Lepas)</span>
+                  <ArrowDown className="h-3 w-3 text-rose-400 animate-bounce" />
+                </div>
+              </div>
+            </div>
+
+            {/* Baris 2: Alur Penagihan & Verifikasi Klaim (Kanan ke Kiri: 5 <- 6 <- 7 <- Status Pending/Dispute) */}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4 items-center">
+              {/* Kolom 1 (Kiri): Hasil Akhir SIMRS Lama */}
+              <div className="order-4 xl:order-1 rounded border border-rose-500/40 bg-rose-950/30 px-3 py-2 text-center">
+                <div className="text-[10px] font-bold text-rose-300 flex items-center justify-center gap-1">
+                  <AlertTriangle className="h-3 w-3 text-rose-400" /> Hasil: Dispute / Pending Klaim
+                </div>
+                <div className="text-[8.5px] text-slate-400 mt-0.5">Berkas tidak sinkron dengan kasir</div>
+              </div>
+
+              {/* Kolom 2: Step 7 - Verifikasi Manual BPJS */}
+              <div className="order-3 xl:order-2 flex items-center gap-2">
+                <ArrowLeft className="hidden xl:block h-3.5 w-3.5 shrink-0 text-slate-600" />
+                <button
+                  type="button"
+                  onClick={() => setSelectedSimrsStageIndex((prev) => (prev === 6 ? null : 6))}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedSimrsStageIndex === 6
+                      ? 'border-rose-400 bg-rose-950/70 shadow-md ring-1 ring-rose-400/50'
+                      : 'border-slate-800 bg-slate-900/80 hover:border-slate-600'
+                  }`}
+                  title="SIMRS Langkah 7: Verifikasi Manual BPJS"
+                >
+                  <span className="block text-[9px] text-slate-500">{simrsStages[6].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedSimrsStageIndex === 6 ? 'text-rose-200' : 'text-slate-300'}`}>
+                    {simrsStages[6].value}
+                  </span>
+                </button>
+              </div>
+
+              {/* Kolom 3: Step 6 - Koder E-Klaim Manual */}
+              <div className="order-2 xl:order-3 flex items-center gap-2">
+                <ArrowLeft className="hidden xl:block h-3.5 w-3.5 shrink-0 text-slate-600" />
+                <button
+                  type="button"
+                  onClick={() => setSelectedSimrsStageIndex((prev) => (prev === 5 ? null : 5))}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedSimrsStageIndex === 5
+                      ? 'border-rose-400 bg-rose-950/70 shadow-md ring-1 ring-rose-400/50'
+                      : 'border-slate-800 bg-slate-900/80 hover:border-slate-600'
+                  }`}
+                  title="SIMRS Langkah 6: Koder E-Klaim Manual"
+                >
+                  <span className="block text-[9px] text-slate-500">{simrsStages[5].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedSimrsStageIndex === 5 ? 'text-rose-200' : 'text-slate-300'}`}>
+                    {simrsStages[5].value}
+                  </span>
+                </button>
+              </div>
+
+              {/* Kolom 4 (Kanan): Step 5 - Kasir & Billing RS */}
+              <div className="order-1 xl:order-4 flex items-center">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSimrsStageIndex((prev) => (prev === 4 ? null : 4))}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedSimrsStageIndex === 4
+                      ? 'border-rose-400 bg-rose-950/70 shadow-md ring-1 ring-rose-400/50'
+                      : 'border-slate-800 bg-slate-900/80 hover:border-slate-600'
+                  }`}
+                  title="SIMRS Langkah 5: Kasir & Billing RS"
+                >
+                  <span className="block text-[9px] text-slate-500">{simrsStages[4].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedSimrsStageIndex === 4 ? 'text-rose-200' : 'text-slate-300'}`}>
+                    {simrsStages[4].value}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          {/* Kartu Rincian Detail Parameter SIMRS saat diklik */}
+          {selectedSimrsStageIndex !== null && simrsStageDetails[selectedSimrsStageIndex] && (
+            <div className="rounded-lg border border-rose-500/40 bg-slate-950/90 p-3.5 shadow-lg space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="rounded bg-rose-500/20 px-2 py-0.5 font-mono text-[10px] font-bold text-rose-300">
+                    SIMRS Silo
+                  </span>
+                  <h3 className="text-xs font-bold text-slate-100">
+                    {simrsStageDetails[selectedSimrsStageIndex].title}
+                  </h3>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSimrsStageIndex(null)}
+                  className="text-slate-400 hover:text-slate-200 p-1"
+                  title="Tutup deskripsi"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </div>
+
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Praktik di SIMRS Konvensional (As-Is Workflow):
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-300">
+                  {simrsStageDetails[selectedSimrsStageIndex].workflow}
+                </p>
+              </div>
+
+              <div className="rounded border border-slate-800 bg-slate-900/60 p-2.5">
+                <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-amber-300">
+                  Parameter & Format Data SIMRS Mentah ({selectedSeed.hospitalName}):
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-[10.5px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-[9.5px] uppercase text-slate-500">
+                        <th className="py-1.5 pr-2 w-1/4">Kolom / Variabel</th>
+                        <th className="py-1.5 px-2 w-1/3">Format Nilai SIMRS</th>
+                        <th className="py-1.5 pl-2">Keterangan Teknis</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-mono">
+                      {simrsStageDetails[selectedSimrsStageIndex].parameters.map((param, pIdx) => (
+                        <tr key={pIdx}>
+                          <td className="py-1.5 pr-2 font-bold text-amber-300">{param.name}</td>
+                          <td className="py-1.5 px-2 text-rose-200 font-semibold">{param.value}</td>
+                          <td className="py-1.5 pl-2 font-sans text-slate-400 text-[10px] leading-relaxed">{param.desc}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="grid gap-2 sm:grid-cols-2">
+                <div className="flex items-start gap-2 rounded border border-rose-500/25 bg-rose-500/10 p-2.5 text-[10px] text-rose-200">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-rose-400 mt-0.5" />
+                  <div>
+                    <b className="block text-rose-300">Celah Masalah & Risiko:</b>
+                    <span className="leading-relaxed">{simrsStageDetails[selectedSimrsStageIndex].vulnerability}</span>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2 rounded border border-emerald-500/25 bg-emerald-500/10 p-2.5 text-[10px] text-emerald-200">
+                  <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400 mt-0.5" />
+                  <div>
+                    <b className="block text-emerald-300">Solusi dengan Standar FHIR:</b>
+                    <span className="leading-relaxed">{simrsStageDetails[selectedSimrsStageIndex].fhirSolution}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
 
           {/* Tabel Matriks Perbandingan Detail Before vs After */}
           <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
