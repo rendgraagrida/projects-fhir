@@ -5,7 +5,7 @@ import '@xyflow/react/dist/style.css';
 import { ALL_NORMALIZATION_LAWS, FHIR_ALL_MODULES_CATALOG, SQL_TO_FHIR_CHEAT_SHEET } from '../data/curriculum-modules';
 import { SAMPLE_ANALYTICAL_SQL_QUERIES, SIMRS_HOSPITAL_SEEDS } from '../data/simrs-normalization-seeds';
 import { useFhirStore } from '../store/use-fhir-store';
-import type { FhirResourceType, NormalizedHospitalDataset, SandboxClinicalFinancialOverrides, SimrsHospitalSeed } from '../types/fhir-global';
+import type { ChargeItem, FhirResourceType, NormalizedHospitalDataset, SandboxClinicalFinancialOverrides, SimrsHospitalSeed } from '../types/fhir-global';
 
 const MODE_OPTIONS = [
   { value: 'sandbox' as const, label: 'SIMRS → FHIR', fullTitle: 'Normalisasi Data SIMRS ke Standar HL7 FHIR & Evidence Chain', icon: Database },
@@ -941,10 +941,14 @@ function FhirModulesStatusMatrix() {
     </section>
   );
 }
+const EMPTY_OVERRIDES: Partial<SandboxClinicalFinancialOverrides> = {};
+const EMPTY_CHARGES: ChargeItem[] = [];
+
 function EvidenceEditor() {
   const activeDataset = useFhirStore((state) => state.activeDataset);
   const selectedHospitalId = useFhirStore((state) => state.selectedHospitalId);
-  const overrides = useFhirStore((state) => state.overridesByHospital[state.selectedHospitalId] ?? {});
+  const overridesByHospital = useFhirStore((state) => state.overridesByHospital);
+  const overrides = overridesByHospital[selectedHospitalId] ?? EMPTY_OVERRIDES;
   const updateOverrides = useFhirStore((state) => state.updateOverrides);
   const selectResource = useFhirStore((state) => state.selectResource);
   const validationReport = useFhirStore((state) => state.validationReport);
@@ -953,7 +957,7 @@ function EvidenceEditor() {
   const claim = activeDataset?.claim;
   const response = activeDataset?.claimResponse;
   const eob = activeDataset?.explanationOfBenefit;
-  const charges = activeDataset?.chargeItems ?? [];
+  const charges = activeDataset?.chargeItems ?? EMPTY_CHARGES;
   const [evidenceTab, setEvidenceTab] = useState<'after-fhir' | 'before-fhir'>('after-fhir');
   const [selectedStageIndex, setSelectedStageIndex] = useState<number | null>(0);
 
