@@ -22,7 +22,7 @@ permissions:
 jobs:
   ci-gate:
     name: "CI Gate: Security, Rules, Tests & Build"
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macbook-m1]
     timeout-minutes: 20
 
     steps:
@@ -41,10 +41,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.bun/install/cache
-          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
+          key: ${{ runner.os }}-${{ runner.arch }}-bun-${{ hashFiles('bun.lock', 'package.json') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
-
+            ${{ runner.os }}-${{ runner.arch }}-bun-
       - name: 4. Install Dependencies
         run: bun install --frozen-lockfile
 
