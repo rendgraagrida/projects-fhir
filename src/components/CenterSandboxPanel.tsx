@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, AlertTriangle, ArrowLeftRight, ArrowRight, BadgeDollarSign, CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Clock, Database, FileText, GitMerge, Info, Layers, Link2, Play, RefreshCcw, Scale, Search, ShieldCheck, SlidersHorizontal, Table2, Unlink, X } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, BadgeDollarSign, CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Clock, Database, FileText, GitMerge, Info, Layers, Link2, Play, RefreshCcw, Scale, Search, ShieldCheck, SlidersHorizontal, Table2, Unlink, X } from 'lucide-react';
 import { Background, ReactFlow, type Edge, type Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ALL_NORMALIZATION_LAWS, FHIR_ALL_MODULES_CATALOG, SQL_TO_FHIR_CHEAT_SHEET } from '../data/curriculum-modules';
@@ -1298,34 +1298,190 @@ function EvidenceEditor() {
             </p>
           </div>
 
-          {/* Interactive 7 Stages Alur */}
-          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/50 p-3">
-            {stages.map((stage, index) => {
-              const isSelected = selectedStageIndex === index;
-              return (
-                <div key={stage.label} className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedStageIndex((prev) => (prev === index ? null : index));
-                      if (activeDataset) selectResource(stage.type, stage.value);
-                    }}
-                    className={`rounded border px-2.5 py-2 text-left transition ${
-                      isSelected
-                        ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
-                        : 'border-slate-700 bg-slate-900 hover:border-slate-500'
-                    }`}
-                    title="Klik untuk membuka deskripsi parameter & inspeksi JSON"
-                  >
-                    <span className="block text-[9px] text-slate-500">{stage.label}</span>
-                    <span className={`mt-1 block max-w-[130px] truncate text-[10px] font-semibold ${isSelected ? 'text-cyan-200' : 'text-slate-300'}`}>
-                      {stage.value}
-                    </span>
-                  </button>
-                  {index < stages.length - 1 && <ArrowRight className="h-3 w-3 text-slate-600" />}
+          {/* Interactive 7 Stages Alur: Serpentine Flow (Kiri -> Kanan, Sambung Turun di Kanan, lalu Kanan -> Kiri) */}
+          <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3.5 space-y-2.5">
+            {/* Baris 1: Alur Klinis ke Pembebanan (Kiri ke Kanan: 1 -> 2 -> 3 -> 4) */}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4 items-center">
+              {/* Step 1: Encounter */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStageIndex((prev) => (prev === 0 ? null : 0));
+                    if (activeDataset) selectResource(stages[0].type, stages[0].value);
+                  }}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedStageIndex === 0
+                      ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
+                      : 'border-slate-700 bg-slate-900 hover:border-slate-500'
+                  }`}
+                  title="Langkah 1: Encounter"
+                >
+                  <span className="block text-[9px] text-slate-500">{stages[0].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedStageIndex === 0 ? 'text-cyan-200' : 'text-slate-300'}`}>
+                    {stages[0].value}
+                  </span>
+                </button>
+                <ArrowRight className="hidden xl:block h-3.5 w-3.5 shrink-0 text-cyan-400" />
+              </div>
+
+              {/* Step 2: Condition / Procedure / Observation */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStageIndex((prev) => (prev === 1 ? null : 1));
+                    if (activeDataset) selectResource(stages[1].type, stages[1].value);
+                  }}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedStageIndex === 1
+                      ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
+                      : 'border-slate-700 bg-slate-900 hover:border-slate-500'
+                  }`}
+                  title="Langkah 2: Condition / Procedure / Observation"
+                >
+                  <span className="block text-[9px] text-slate-500">{stages[1].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedStageIndex === 1 ? 'text-cyan-200' : 'text-slate-300'}`}>
+                    {stages[1].value}
+                  </span>
+                </button>
+                <ArrowRight className="hidden xl:block h-3.5 w-3.5 shrink-0 text-cyan-400" />
+              </div>
+
+              {/* Step 3: Composition */}
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStageIndex((prev) => (prev === 2 ? null : 2));
+                    if (activeDataset) selectResource(stages[2].type, stages[2].value);
+                  }}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedStageIndex === 2
+                      ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
+                      : 'border-slate-700 bg-slate-900 hover:border-slate-500'
+                  }`}
+                  title="Langkah 3: Composition"
+                >
+                  <span className="block text-[9px] text-slate-500">{stages[2].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedStageIndex === 2 ? 'text-cyan-200' : 'text-slate-300'}`}>
+                    {stages[2].value}
+                  </span>
+                </button>
+                <ArrowRight className="hidden xl:block h-3.5 w-3.5 shrink-0 text-cyan-400" />
+              </div>
+
+              {/* Step 4: ChargeItem */}
+              <div className="flex items-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStageIndex((prev) => (prev === 3 ? null : 3));
+                    if (activeDataset) selectResource(stages[3].type, stages[3].value);
+                  }}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedStageIndex === 3
+                      ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
+                      : 'border-slate-700 bg-slate-900 hover:border-slate-500'
+                  }`}
+                  title="Langkah 4: ChargeItem"
+                >
+                  <span className="block text-[9px] text-slate-500">{stages[3].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedStageIndex === 3 ? 'text-cyan-200' : 'text-slate-300'}`}>
+                    {stages[3].value}
+                  </span>
+                </button>
+              </div>
+            </div>
+
+            {/* Penyambung Akhir di Kanan: Panah Turun Menyambung Baris 1 ke Baris 2 */}
+            <div className="hidden xl:grid grid-cols-4 gap-2">
+              <div className="col-start-4 flex items-center justify-center py-1">
+                <div className="flex items-center gap-1.5 rounded-full border border-cyan-500/30 bg-cyan-950/40 px-2.5 py-0.5 text-[9px] font-bold text-cyan-300">
+                  <span>Tautkan ke Tagihan Klaim</span>
+                  <ArrowDown className="h-3 w-3 animate-bounce text-cyan-400" />
                 </div>
-              );
-            })}
+              </div>
+            </div>
+
+            {/* Baris 2: Alur Klaim & Adjudikasi (Menyambung dari Kanan ke Arah Kiri: 5 <- 6 <- 7 <- Selesai) */}
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4 items-center">
+              {/* Kolom 1 (Kiri): Badge Selesai Audit */}
+              <div className="order-4 xl:order-1 rounded border border-emerald-500/30 bg-emerald-950/30 px-3 py-2 text-center">
+                <div className="text-[10px] font-bold text-emerald-300 flex items-center justify-center gap-1">
+                  <CheckCircle2 className="h-3 w-3" /> Rantai Bukti Lengkap
+                </div>
+                <div className="text-[8.5px] text-slate-400 mt-0.5">Encounter → EOB Terverifikasi</div>
+              </div>
+
+              {/* Kolom 2: Step 7 - ExplanationOfBenefit */}
+              <div className="order-3 xl:order-2 flex items-center gap-2">
+                <ArrowLeft className="hidden xl:block h-3.5 w-3.5 shrink-0 text-emerald-400" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStageIndex((prev) => (prev === 6 ? null : 6));
+                    if (activeDataset) selectResource(stages[6].type, stages[6].value);
+                  }}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedStageIndex === 6
+                      ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
+                      : 'border-slate-700 bg-slate-900 hover:border-slate-500'
+                  }`}
+                  title="Langkah 7: ExplanationOfBenefit"
+                >
+                  <span className="block text-[9px] text-slate-500">{stages[6].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedStageIndex === 6 ? 'text-cyan-200' : 'text-slate-300'}`}>
+                    {stages[6].value}
+                  </span>
+                </button>
+              </div>
+
+              {/* Kolom 3: Step 6 - ClaimResponse */}
+              <div className="order-2 xl:order-3 flex items-center gap-2">
+                <ArrowLeft className="hidden xl:block h-3.5 w-3.5 shrink-0 text-cyan-400" />
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStageIndex((prev) => (prev === 5 ? null : 5));
+                    if (activeDataset) selectResource(stages[5].type, stages[5].value);
+                  }}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedStageIndex === 5
+                      ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
+                      : 'border-slate-700 bg-slate-900 hover:border-slate-500'
+                  }`}
+                  title="Langkah 6: ClaimResponse"
+                >
+                  <span className="block text-[9px] text-slate-500">{stages[5].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedStageIndex === 5 ? 'text-cyan-200' : 'text-slate-300'}`}>
+                    {stages[5].value}
+                  </span>
+                </button>
+              </div>
+
+              {/* Kolom 4 (Kanan): Step 5 - Claim (Tepat di Bawah Step 4 ChargeItem!) */}
+              <div className="order-1 xl:order-4 flex items-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedStageIndex((prev) => (prev === 4 ? null : 4));
+                    if (activeDataset) selectResource(stages[4].type, stages[4].value);
+                  }}
+                  className={`w-full rounded border px-2.5 py-2 text-left transition ${
+                    selectedStageIndex === 4
+                      ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
+                      : 'border-slate-700 bg-slate-900 hover:border-slate-500'
+                  }`}
+                  title="Langkah 5: Claim"
+                >
+                  <span className="block text-[9px] text-slate-500">{stages[4].label}</span>
+                  <span className={`mt-1 block truncate text-[10px] font-semibold ${selectedStageIndex === 4 ? 'text-cyan-200' : 'text-slate-300'}`}>
+                    {stages[4].value}
+                  </span>
+                </button>
+              </div>
+            </div>
           </div>
 
           {/* Detailed Parameter Card when clicked */}
