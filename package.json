@@ -13,6 +13,7 @@
     "check:repo": "bun scripts/check-repository-structure.ts",
     "check:rules": "bun scripts/check-rules-sync.ts",
     "sync": "bun scripts/sync-branch.ts",
+    "deploy:prod": "bun scripts/deploy-prod.ts",
     "preview": "vite preview"
   },
   "dependencies": {

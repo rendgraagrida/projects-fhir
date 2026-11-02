@@ -1,38 +1,83 @@
 # ==============================================================
-# Global HL7 FHIR Learning Lab — Production Deployment Workflow
-# Deploys compiled static SPA bundle to Cloudflare Pages
+# Global HL7 FHIR Learning Lab — Explicit Production Release Only
+# A main merge never dispatches this workflow.
 # ==============================================================
-name: Deploy to Cloudflare Pages
+name: Deploy to Production
 
 on:
   workflow_dispatch:
     inputs:
       reason:
-        description: 'Alasan deployment manual'
-        required: false
-        default: 'Manual production deployment'
-  push:
-    branches: [ main ]
-
-concurrency:
-  group: deploy-cloudflare
-  cancel-in-progress: false
+        description: 'Alasan deploy manual'
+        required: true
+        default: 'Explicit production deployment request'
+      expected_sha:
+        description: 'Approved full main commit SHA; dispatch fails if main moved'
+        required: true
+        type: string
 
 permissions:
   contents: read
-  deployments: write
+
+concurrency:
+  group: fhir-production
+  cancel-in-progress: false
 
 jobs:
-  deploy:
-    name: Build & Deploy to Cloudflare Pages
+  canonical-ci:
+    name: Verify canonical CI for dispatched SHA
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require successful main CI for exactly github.sha
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName !== 'workflow_dispatch' || context.ref !== 'refs/heads/main') {
+              throw new Error('Production requires an explicit workflow_dispatch on main.');
+            }
+            const expectedSha = context.payload.inputs?.expected_sha;
+            if (typeof expectedSha !== 'string' || !/^[0-9a-f]{40}$/.test(expectedSha)) {
+              throw new Error('expected_sha must be a full lowercase 40-character Git SHA.');
+            }
+            if (context.sha !== expectedSha) {
+              throw new Error('Dispatched main SHA does not match the approved SHA; main advanced before dispatch. Review and explicitly authorize a new release.');
+            }
+            const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
+              owner: context.repo.owner, repo: context.repo.repo,
+              workflow_id: 'ci-gate.yml', branch: 'main', event: 'push',
+              head_sha: context.sha, per_page: 100,
+            });
+            const run = runs.filter(r => r.head_sha === context.sha && r.head_branch === 'main' && r.event === 'push')
+              .sort((a, b) => b.run_number - a.run_number || b.run_attempt - a.run_attempt)[0];
+            if (!run || run.status !== 'completed' || run.conclusion !== 'success') {
+              throw new Error(`Latest canonical main CI for dispatched SHA ${context.sha} must be completed/successful; retry dispatch after CI finishes.`);
+            }
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner: context.repo.owner, repo: context.repo.repo, run_id: run.id,
+              filter: 'latest', per_page: 100,
+            });
+            const gate = jobs.filter(j => j.name === 'CI Gate: Security, Rules, Tests & Build');
+            if (gate.length !== 1 || gate[0].status !== 'completed' || gate[0].conclusion !== 'success') {
+              throw new Error('The stable canonical CI job is missing, ambiguous, skipped, or unsuccessful.');
+            }
+            core.summary.addHeading('Canonical release gate').addRaw(`SHA: ${context.sha}\nCI: ${run.html_url}`).write();
+
+  build-and-deploy:
+    name: Build & Deploy Production Assets
+    needs: canonical-ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
-
+    permissions:
+      contents: read
+      deployments: write
     steps:
-      - name: 1. Checkout Codebase
+      - name: 1. Checkout exact dispatched revision
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: 2. Setup Bun Runtime
@@ -54,7 +99,7 @@ jobs:
       - name: 5. Build Production Bundle
         run: bun run build
 
-      - name: 6. Deploy to Cloudflare Pages
+      - name: 6. Deploy to Cloudflare Pages (if credentials provided)
         uses: cloudflare/wrangler-action@v3
         if: ${{ env.CLOUDFLARE_API_TOKEN != '' && env.CLOUDFLARE_ACCOUNT_ID != '' }}
         env:
