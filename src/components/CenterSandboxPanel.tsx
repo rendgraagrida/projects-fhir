@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Activity, ArrowLeftRight, ArrowRight, BadgeDollarSign, CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Clock, Database, GitMerge, Layers, Play, RefreshCcw, Scale, Search, ShieldCheck, SlidersHorizontal, Table2, X } from 'lucide-react';
+import { Activity, AlertTriangle, ArrowLeftRight, ArrowRight, BadgeDollarSign, CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Clock, Database, FileText, GitMerge, Info, Layers, Link2, Play, RefreshCcw, Scale, Search, ShieldCheck, SlidersHorizontal, Table2, Unlink, X } from 'lucide-react';
 import { Background, ReactFlow, type Edge, type Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ALL_NORMALIZATION_LAWS, FHIR_ALL_MODULES_CATALOG, SQL_TO_FHIR_CHEAT_SHEET } from '../data/curriculum-modules';
@@ -966,8 +966,13 @@ function EvidenceEditor() {
   const response = activeDataset?.claimResponse;
   const eob = activeDataset?.explanationOfBenefit;
   const charges = activeDataset?.chargeItems ?? [];
-  const setOverride = (key: keyof SandboxClinicalFinancialOverrides, value: boolean | number | string) => void updateOverrides({ [key]: value } as Partial<SandboxClinicalFinancialOverrides>);
-  const monetary = (key: 'roomUnitPriceIdr' | 'procedurePriceIdr' | 'medicationPriceIdr' | 'approvedRoomBenefitIdr' | 'approvedProcedureBenefitIdr' | 'approvedMedicationBenefitIdr') => Number(effective[key] ?? 0);
+  const [evidenceTab, setEvidenceTab] = useState<'after-fhir' | 'before-fhir'>('after-fhir');
+
+  const setOverride = (key: keyof SandboxClinicalFinancialOverrides, value: boolean | number | string) =>
+    void updateOverrides({ [key]: value } as Partial<SandboxClinicalFinancialOverrides>);
+  const monetary = (key: 'roomUnitPriceIdr' | 'procedurePriceIdr' | 'medicationPriceIdr' | 'approvedRoomBenefitIdr' | 'approvedProcedureBenefitIdr' | 'approvedMedicationBenefitIdr') =>
+    Number(effective[key] ?? 0);
+
   const stages: Array<{ label: string; value: string; type: FhirResourceType }> = [
     { label: 'Encounter', value: activeDataset?.encounter.id ?? '—', type: 'Encounter' },
     { label: 'Condition / Procedure / Observation', value: activeDataset?.conditions[0]?.id ?? activeDataset?.procedures[0]?.id ?? activeDataset?.observations[0]?.id ?? '—', type: activeDataset?.conditions[0] ? 'Condition' : activeDataset?.procedures[0] ? 'Procedure' : 'Observation' },
@@ -977,7 +982,348 @@ function EvidenceEditor() {
     { label: 'ClaimResponse', value: response?.id ?? '—', type: 'ClaimResponse' },
     { label: 'ExplanationOfBenefit', value: eob?.id ?? '—', type: 'ExplanationOfBenefit' },
   ];
-  return <div className="space-y-4"><header><div className="flex items-center gap-2 text-sm font-bold text-slate-100"><ShieldCheck className="h-4 w-4 text-emerald-300" /> Clinical → Financial Evidence Chain Editor</div><p className="mt-1 text-xs text-slate-400">Ubah nilai klinis dan rupiah secara interaktif, lalu lihat enam rule conformance secara live.</p></header><div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/50 p-3">{stages.map((stage, index) => <div key={stage.label} className="flex items-center gap-2"><button type="button" onClick={() => activeDataset && selectResource(stage.type, stage.value)} className="rounded border border-slate-700 bg-slate-900 px-2 py-2 text-left hover:border-cyan-400"><span className="block text-[9px] text-slate-500">{stage.label}</span><span className="mt-1 block max-w-[120px] truncate text-[10px] font-semibold text-slate-200">{stage.value}</span></button>{index < stages.length - 1 && <ArrowRight className="h-3 w-3 text-slate-600" />}</div>)}</div><div className="grid gap-4 xl:grid-cols-2"><section className="rounded-lg border border-slate-800 bg-slate-950/50 p-3"><div className="flex items-center justify-between gap-2"><div className="flex items-center gap-2 text-xs font-bold text-slate-200"><BadgeDollarSign className="h-3.5 w-3.5 text-emerald-300" /> Monetary controls · IDR</div><label className="flex items-center gap-1.5 text-[10px] text-slate-400">Outcome<select value={effective.adjudicationOutcome} onChange={(e) => setOverride('adjudicationOutcome', e.target.value)} className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] text-cyan-200 outline-none"><option value="complete">complete</option><option value="partial">partial</option><option value="queued">queued</option><option value="error">error</option></select></label></div><div className="mt-3 grid grid-cols-2 gap-2">{(['roomUnitPriceIdr', 'procedurePriceIdr', 'medicationPriceIdr', 'approvedRoomBenefitIdr', 'approvedProcedureBenefitIdr', 'approvedMedicationBenefitIdr'] as const).map((key) => <label key={key} className="text-[10px] text-slate-500">{key}<div className="mt-1 flex items-center rounded border border-slate-800 bg-slate-900"><span className="px-2 text-[10px] text-slate-600">Rp</span><input type="number" min="0" value={monetary(key)} onChange={(event) => setOverride(key, Math.max(0, Number(event.target.value) || 0))} className="w-full bg-transparent px-2 py-1.5 text-[11px] text-slate-200 outline-none" /></div></label>)}</div><div className="mt-3 rounded border border-slate-800 p-2 text-[10px] text-slate-400">Submitted: <b className="text-slate-200">{formatIdr(claim?.total?.value)}</b> · Approved: <b className="text-emerald-300">{formatIdr(response?.total?.find((total) => total.category?.coding?.some((coding) => coding.code === 'benefit'))?.amount?.value)}</b></div></section><section className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3"><div className="flex items-center gap-2 text-xs font-bold text-rose-200"><SlidersHorizontal className="h-3.5 w-3.5" /> Invariant conformance simulator</div><p className="mt-1 text-[10px] text-slate-500">Sengaja inject pelanggaran untuk mempelajari remediation path.</p><div className="mt-3 grid gap-2 sm:grid-cols-2"><FieldToggle label="Inject obs-7 violation" checked={Boolean(effective.injectObs7Violation)} onChange={(value) => setOverride('injectObs7Violation', value)} /><FieldToggle label="Inject cmp-1 violation" checked={Boolean(effective.injectCmp1Violation)} onChange={(value) => setOverride('injectCmp1Violation', value)} /><FieldToggle label="Broken evidence reference" checked={Boolean(effective.injectBrokenEvidenceChain)} onChange={(value) => setOverride('injectBrokenEvidenceChain', value)} /><FieldToggle label="Financial total mismatch" checked={Boolean(effective.injectFinancialMismatch)} onChange={(value) => setOverride('injectFinancialMismatch', value)} /><FieldToggle label="bdl-3 bundle order" checked={Boolean(effective.injectBundleOrderViolation)} onChange={(value) => setOverride('injectBundleOrderViolation', value)} /></div></section></div><div className="grid gap-3 md:grid-cols-3">{charges.map((charge) => <div key={charge.id} className="rounded border border-slate-800 bg-slate-950/50 p-3"><div className="text-[10px] font-semibold text-slate-300">{charge.code?.coding?.[0]?.display ?? charge.code?.coding?.[0]?.code}</div><div className="mt-2 text-sm font-bold text-emerald-300">{formatIdr(charge.priceOverride?.value)}</div><div className="mt-1 text-[9px] text-slate-500">supportingInformation: {charge.supportingInformation?.[0]?.reference ?? '—'}</div></div>)}</div>{validationReport && <div className="rounded border border-slate-800 bg-slate-950/50 p-3 text-[10px] text-slate-400">Validator snapshot: <b className={validationReport.valid ? 'text-emerald-300' : 'text-rose-300'}>{validationReport.valid ? 'CONFORMANT' : `${validationReport.errorCount} error(s)`}</b> · {validationReport.totalResourcesChecked} resources checked</div>}</div>;
+
+  const beforeAfterComparisons = [
+    {
+      aspect: 'Hubungan Klinis ke Tagihan',
+      before: 'Terputus (Decoupled). Bagian kasir/billing memasukkan kode klaim INA-CBG secara manual tanpa korelasi langsung ke resume medis dokter.',
+      after: 'Terkunci Ketat (Hard-Linked). Claim.diagnosis dan Claim.procedure wajib merujuk langsung ke Condition dan Procedure terverifikasi dari Encounter yang sama.',
+      risk: 'Tinggi: Rawan ghost billing, klaim fiktif, dan sengketa pending BPJS.',
+      impact: 'Zero Fraud: Klaim ditolak otomatis oleh validator jika mata rantai bukti terputus.',
+    },
+    {
+      aspect: 'Format Kode & Terminologi',
+      before: 'Format string bebas lokal (misal: "ICU-01", "PAKET-A", singkatan lokal RS) yang berbeda-beda di tiap SIMRS.',
+      after: 'Standar terminologi internasional bersistem URI resmi (ICD-10 untuk diagnosis, ICD-9-CM untuk prosedur, LOINC untuk lab/vital, KFA Kemenkes untuk obat).',
+      risk: 'Tinggi: Data tidak dapat dipertukarkan (silo) dan tidak bisa diagregasi nasional.',
+      impact: 'Interoperabel: Dapat dipahami otomatis oleh SATUSEHAT, payor asuransi, dan platform analitik.',
+    },
+    {
+      aspect: 'Resume Medis Pulang (Discharge)',
+      before: 'Sering berupa berkas fisik terpisah atau PDF scan yang terlambat diisi setelah tagihan dikirim ke verifikator BPJS.',
+      after: 'Composition digital dengan invarian cmp-1 & cmp-2 yang wajib memiliki section lengkap dan terhubung ke Claim.supportingInfo.',
+      risk: 'Sedang-Tinggi: Klaim tertolak karena dokter belum menyelesaikan berkas kepulangan.',
+      impact: 'Audit Siap Saji: Status resume medis divalidasi sistem sebelum klaim diserahkan.',
+    },
+    {
+      aspect: 'Rekonsiliasi Nominal Rupiah',
+      before: 'Nominal total tagihan di kasir sering berselisih dengan rincian tindakan dan tarif obat karena pembulatan atau kalkulasi manual.',
+      after: 'Total tagihan Claim.total diverifikasi otomatis terhadap agregasi ChargeItem.priceOverride dan Claim.item.net.',
+      risk: 'Sedang: Selisih pembukuan kasir RS dan payor penjamin.',
+      impact: 'Akurat 100%: Invariant finansial mendeteksi ketidakcocokan jumlah secara otomatis.',
+    },
+    {
+      aspect: 'Identitas Pasien & Duplikasi Rekam Medis',
+      before: 'Pasien IGD dibuatkan nomor rekam medis darurat baru tanpa histori dan tidak pernah disatukan ke rekam medis rawat jalan.',
+      after: 'Patient.link dengan tipe replaced-by dan replaces secara atomik menulis ulang referensi klinis lama ke master ID pasien.',
+      risk: 'Kritis: Bahaya keselamatan pasien (alergi obat dan riwayat penyakit tidak terbaca di IGD).',
+      impact: 'Keselamatan Pasien: Riwayat rekam medis terpadu tanpa data yang hilang.',
+    },
+    {
+      aspect: 'Pelaporan & Audit Lintas Rumah Sakit',
+      before: 'Proses ETL manual berbulan-bulan karena struktur tabel SQL tiap RS berbeda total.',
+      after: 'SQL-on-FHIR v2 meratakan JSON nested menjadi 27 tabel analitik dan 3 analytical views seragam yang siap di-query SQL PostgreSQL.',
+      risk: 'Tinggi: Biaya integrasi data mahal dan pelaporan Kemenkes lambat.',
+      impact: 'Analitik Cepat: Query SQL instan lintas rumah sakit menggunakan PGlite/PostgreSQL.',
+    },
+  ];
+
+  return (
+    <div className="space-y-4">
+      {/* Header & Sub-Tabs Switcher */}
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-3">
+        <div>
+          <div className="flex items-center gap-2 text-sm font-bold text-slate-100">
+            <ShieldCheck className="h-4 w-4 text-emerald-300" />
+            <span>Clinical → Financial Evidence Chain & Komparasi Standar</span>
+          </div>
+          <p className="mt-1 text-xs text-slate-400">
+            Evaluasi perbandingan arsitektur data medis-finansial antara sistem SIMRS lama dengan standar HL7 FHIR R4.
+          </p>
+        </div>
+        <div className="inline-flex rounded-lg border border-slate-800 bg-slate-900/90 p-1" role="tablist" aria-label="Evidence comparison tabs">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={evidenceTab === 'before-fhir'}
+            onClick={() => setEvidenceTab('before-fhir')}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              evidenceTab === 'before-fhir'
+                ? 'border border-rose-500/50 bg-rose-950/60 text-rose-300 shadow-sm'
+                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+            }`}
+          >
+            <Unlink className="h-3.5 w-3.5 text-rose-400" />
+            <span>1. Sebelum FHIR (SIMRS Konvensional)</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={evidenceTab === 'after-fhir'}
+            onClick={() => setEvidenceTab('after-fhir')}
+            className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-bold transition ${
+              evidenceTab === 'after-fhir'
+                ? 'border border-emerald-500/50 bg-emerald-950/60 text-emerald-300 shadow-sm'
+                : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200'
+            }`}
+          >
+            <Link2 className="h-3.5 w-3.5 text-emerald-400" />
+            <span>2. Setelah FHIR (Rantai Bukti Terverifikasi)</span>
+          </button>
+        </div>
+      </div>
+
+      {/* TAB 1: SEBELUM FHIR (SIMRS KONVENSIONAL SILO) */}
+      {evidenceTab === 'before-fhir' && (
+        <div className="space-y-4">
+          {/* Banner Problem Statement */}
+          <div className="rounded-lg border border-rose-500/30 bg-rose-950/20 p-3.5">
+            <div className="flex items-center gap-2 text-xs font-bold text-rose-300">
+              <AlertTriangle className="h-4 w-4 text-rose-400" />
+              <span>Arsitektur SIMRS Silo: Masalah Rantai Bukti Terputus</span>
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-300">
+              Pada SIMRS konvensional, modul pelayanan dokter (EMR) dan modul penagihan kasir (Billing/Klaim) berada pada tabel relasional yang terpisah tanpa referensi keterlacakan (*unlinked rows*).
+              Klaim diajukan berdasarkan input teks kasir, membuka celah <b>klaim fiktif</b>, <b>upcoding</b>, dan <b>penolakan klaim BPJS</b> karena tidak adanya bukti tindakan dokter yang terikat langsung.
+            </p>
+          </div>
+
+          {/* 4 Kartu Titik Kerapuhan Utama */}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-rose-300">
+                <Unlink className="h-3.5 w-3.5" /> Ghost Billing & Klaim Fiktif
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                Tindakan/obat dimasukkan ke tagihan kasir tanpa keterikatan ID ke rekam medis tindakan yang dilakukan dokter.
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-amber-300">
+                <AlertTriangle className="h-3.5 w-3.5" /> Discrepancy Total Tagihan
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                Total klaim tidak diaudit secara otomatis terhadap penjumlahan rincian per-item layanan, menyebabkan selisih buku.
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-cyan-300">
+                <Database className="h-3.5 w-3.5" /> Kode Lokal Tanpa Standar
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                Menggunakan nama ruang atau kode paket lokal ("ICU-01", "PAKET-A") yang tidak dimengerti oleh sistem penjamin eksternal.
+              </p>
+            </div>
+            <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-violet-300">
+                <FileText className="h-3.5 w-3.5" /> Resume Medis Tercecer
+              </div>
+              <p className="mt-1 text-[10px] leading-relaxed text-slate-400">
+                Dokumen kepulangan berupa kertas/PDF manual di luar database klaim, memicu dispute verifikator berkas BPJS.
+              </p>
+            </div>
+          </div>
+
+          {/* Tabel Matriks Perbandingan Detail Before vs After */}
+          <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-200">
+              <Scale className="h-4 w-4 text-cyan-400" />
+              <span>Matriks Perbedaan Komparatif: Sebelum vs Setelah Mengadopsi HL7 FHIR</span>
+            </div>
+            <div className="mt-3 overflow-x-auto">
+              <table className="w-full text-left text-[11px]">
+                <thead>
+                  <tr className="border-b border-slate-800 text-[10px] uppercase text-slate-400">
+                    <th className="py-2 pr-3">Aspek Pengelolaan</th>
+                    <th className="py-2 px-3 text-rose-300">Sebelum FHIR (SIMRS Konvensional)</th>
+                    <th className="py-2 px-3 text-emerald-300">Setelah FHIR (HL7 FHIR R4)</th>
+                    <th className="py-2 pl-3">Dampak Risiko / Keuntungan</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-slate-300">
+                  {beforeAfterComparisons.map((row, i) => (
+                    <tr key={i} className="hover:bg-slate-900/40">
+                      <td className="py-2.5 pr-3 font-semibold text-slate-200">{row.aspect}</td>
+                      <td className="py-2.5 px-3 text-rose-200/90 leading-relaxed bg-rose-950/10 rounded">{row.before}</td>
+                      <td className="py-2.5 px-3 text-emerald-200/90 leading-relaxed bg-emerald-950/10 rounded">{row.after}</td>
+                      <td className="py-2.5 pl-3 leading-relaxed">
+                        <span className="text-[10px] text-amber-300 block">{row.risk}</span>
+                        <span className="text-[10px] text-teal-300 block mt-0.5">{row.impact}</span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Contoh Data SIMRS Mentah Rumah Sakit Terpilih */}
+          <div className="rounded-lg border border-slate-800 bg-slate-950/60 p-3">
+            <div className="flex items-center justify-between">
+              <div className="text-xs font-bold text-slate-200">
+                <span>Contoh Data SIMRS Terfragmentasi: {selectedSeed.hospitalName} ({selectedSeed.hospitalCode})</span>
+              </div>
+              <span className="rounded bg-slate-800 px-2 py-0.5 text-[9px] text-slate-400">Arsitektur: {selectedSeed.simrsArchitectureStyle}</span>
+            </div>
+            <p className="mt-1 text-[10px] text-slate-400">
+              Berikut adalah baris data mentah di database SIMRS sebelum normalisasi. Perhatikan bagaimana kolom klaim/billing terpisah dari rekam medis dokter:
+            </p>
+            <div className="mt-2.5 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {Object.entries(selectedSeed.rawSimrsTables).map(([tblName, rows]) => (
+                <div key={tblName} className="rounded border border-slate-800 bg-slate-900/60 p-2.5">
+                  <div className="text-[10px] font-bold text-amber-300 font-mono">Tabel: {tblName}</div>
+                  <pre className="mt-1.5 max-h-36 overflow-y-auto rounded bg-slate-950 p-2 font-mono text-[9.5px] leading-relaxed text-slate-300">
+                    {JSON.stringify(rows[0], null, 2)}
+                  </pre>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: SETELAH FHIR (RANTAI BUKTI HL7 FHIR) */}
+      {evidenceTab === 'after-fhir' && (
+        <div className="space-y-4">
+          {/* Banner Active Evidence Chain */}
+          <div className="rounded-lg border border-emerald-500/30 bg-emerald-950/20 p-3.5">
+            <div className="flex items-center gap-2 text-xs font-bold text-emerald-300">
+              <Link2 className="h-4 w-4 text-emerald-400" />
+              <span>Rantai Bukti Terkunci: Keterlacakan 100% dari Tindakan Medis ke Rupiah</span>
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-slate-300">
+              Setiap rupiah di dalam <b>Claim.total</b> wajib memiliki referensi terverifikasi ke <b>ChargeItem</b>, <b>Procedure</b>, <b>Condition</b>, dan <b>Composition</b> pada <b>Encounter</b> yang sama.
+              Jika referensi bukti diputuskan, sistem otomatis memblokir klaim melalui <b>Rule 4 (FHIR_STD_04_CLINICAL_TO_CLAIM_EVIDENCE_CHAIN)</b>.
+            </p>
+          </div>
+
+          {/* Interactive 7 Stages Alur */}
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+            {stages.map((stage, index) => (
+              <div key={stage.label} className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => activeDataset && selectResource(stage.type, stage.value)}
+                  className="rounded border border-slate-700 bg-slate-900 px-2.5 py-2 text-left hover:border-cyan-400 transition"
+                  title="Klik untuk membuka resource di Inspector JSON"
+                >
+                  <span className="block text-[9px] text-slate-500">{stage.label}</span>
+                  <span className="mt-1 block max-w-[130px] truncate text-[10px] font-semibold text-cyan-200">{stage.value}</span>
+                </button>
+                {index < stages.length - 1 && <ArrowRight className="h-3 w-3 text-slate-600" />}
+              </div>
+            ))}
+          </div>
+
+          {/* Interactive Controls & Simulator */}
+          <div className="grid gap-4 xl:grid-cols-2">
+            {/* Monetary Controls */}
+            <section className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-bold text-slate-200">
+                  <BadgeDollarSign className="h-3.5 w-3.5 text-emerald-300" /> Monetary controls · IDR
+                </div>
+                <label className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                  Outcome
+                  <select
+                    value={effective.adjudicationOutcome}
+                    onChange={(e) => setOverride('adjudicationOutcome', e.target.value)}
+                    className="rounded border border-slate-700 bg-slate-900 px-1.5 py-0.5 text-[10px] text-cyan-200 outline-none"
+                  >
+                    <option value="complete">complete</option>
+                    <option value="partial">partial</option>
+                    <option value="queued">queued</option>
+                    <option value="error">error</option>
+                  </select>
+                </label>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2">
+                {(['roomUnitPriceIdr', 'procedurePriceIdr', 'medicationPriceIdr', 'approvedRoomBenefitIdr', 'approvedProcedureBenefitIdr', 'approvedMedicationBenefitIdr'] as const).map((key) => (
+                  <label key={key} className="text-[10px] text-slate-500">
+                    {key}
+                    <div className="mt-1 flex items-center rounded border border-slate-800 bg-slate-900">
+                      <span className="px-2 text-[10px] text-slate-600">Rp</span>
+                      <input
+                        type="number"
+                        min="0"
+                        value={monetary(key)}
+                        onChange={(event) => setOverride(key, Math.max(0, Number(event.target.value) || 0))}
+                        className="w-full bg-transparent px-2 py-1.5 text-[11px] text-slate-200 outline-none"
+                      />
+                    </div>
+                  </label>
+                ))}
+              </div>
+              <div className="mt-3 rounded border border-slate-800 p-2 text-[10px] text-slate-400">
+                Submitted: <b className="text-slate-200">{formatIdr(claim?.total?.value)}</b> · Approved: <b className="text-emerald-300">{formatIdr(response?.total?.find((total) => total.category?.coding?.some((coding) => coding.code === 'benefit'))?.amount?.value)}</b>
+              </div>
+            </section>
+
+            {/* Invariant Conformance Simulator */}
+            <section className="rounded-lg border border-rose-500/20 bg-rose-500/5 p-3">
+              <div className="flex items-center gap-2 text-xs font-bold text-rose-200">
+                <SlidersHorizontal className="h-3.5 w-3.5" /> Invariant conformance simulator
+              </div>
+              <p className="mt-1 text-[10px] text-slate-500">
+                Sengaja injeksikan pelanggaran rantai bukti untuk menguji deteksi validator secara live.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <FieldToggle
+                  label="Broken evidence reference"
+                  checked={Boolean(effective.injectBrokenEvidenceChain)}
+                  onChange={(value) => setOverride('injectBrokenEvidenceChain', value)}
+                />
+                <FieldToggle
+                  label="Financial total mismatch"
+                  checked={Boolean(effective.injectFinancialMismatch)}
+                  onChange={(value) => setOverride('injectFinancialMismatch', value)}
+                />
+                <FieldToggle
+                  label="Inject obs-7 violation"
+                  checked={Boolean(effective.injectObs7Violation)}
+                  onChange={(value) => setOverride('injectObs7Violation', value)}
+                />
+                <FieldToggle
+                  label="Inject cmp-1 violation"
+                  checked={Boolean(effective.injectCmp1Violation)}
+                  onChange={(value) => setOverride('injectCmp1Violation', value)}
+                />
+                <FieldToggle
+                  label="bdl-3 bundle order"
+                  checked={Boolean(effective.injectBundleOrderViolation)}
+                  onChange={(value) => setOverride('injectBundleOrderViolation', value)}
+                />
+              </div>
+            </section>
+          </div>
+
+          {/* Rincian ChargeItems dengan Link Bukti */}
+          <div className="grid gap-3 md:grid-cols-3">
+            {charges.map((charge) => (
+              <div key={charge.id} className="rounded border border-slate-800 bg-slate-950/50 p-3">
+                <div className="text-[10px] font-semibold text-slate-300">
+                  {charge.code?.coding?.[0]?.display ?? charge.code?.coding?.[0]?.code}
+                </div>
+                <div className="mt-2 text-sm font-bold text-emerald-300">
+                  {formatIdr(charge.priceOverride?.value)}
+                </div>
+                <div className="mt-1 text-[9px] text-slate-500">
+                  supportingInformation: <span className="font-mono text-cyan-300">{charge.supportingInformation?.[0]?.reference ?? '—'}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Live Validation Snapshot */}
+          {validationReport && (
+            <div className="rounded border border-slate-800 bg-slate-950/50 p-3 text-[10px] text-slate-400">
+              Validator snapshot: <b className={validationReport.valid ? 'text-emerald-300' : 'text-rose-300'}>{validationReport.valid ? 'CONFORMANT' : `${validationReport.errorCount} error(s)`}</b> · {validationReport.totalResourcesChecked} resources checked
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function ResourceGraph() {
