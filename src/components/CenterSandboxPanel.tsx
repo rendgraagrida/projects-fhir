@@ -955,6 +955,7 @@ function EvidenceEditor() {
   const eob = activeDataset?.explanationOfBenefit;
   const charges = activeDataset?.chargeItems ?? [];
   const [evidenceTab, setEvidenceTab] = useState<'after-fhir' | 'before-fhir'>('after-fhir');
+  const [selectedStageIndex, setSelectedStageIndex] = useState<number | null>(0);
 
   const setOverride = (key: keyof SandboxClinicalFinancialOverrides, value: boolean | number | string) =>
     void updateOverrides({ [key]: value } as Partial<SandboxClinicalFinancialOverrides>);
@@ -970,6 +971,114 @@ function EvidenceEditor() {
     { label: 'ClaimResponse', value: response?.id ?? '—', type: 'ClaimResponse' },
     { label: 'ExplanationOfBenefit', value: eob?.id ?? '—', type: 'ExplanationOfBenefit' },
   ];
+
+  const stageDetails = useMemo(() => {
+    if (!activeDataset) return [];
+    return [
+      {
+        title: '1. Encounter (Kunjungan Pasien / Rawat Inap & Darurat)',
+        type: 'Encounter' as const,
+        id: activeDataset.encounter.id,
+        role: 'Konteks induk seluruh episode perawatan medis dan batasan hukum klaim. Seluruh Condition (diagnosa), Procedure (tindakan), dan Composition (resume medis) wajib merujuk ke Encounter ini agar klaim tidak dianggap fiktif.',
+        invariant: 'Rule 4 (FHIR_STD_04_CLINICAL_TO_CLAIM_EVIDENCE_CHAIN): Setiap referensi klinis wajib berada pada Encounter yang sama.',
+        parameters: [
+          { name: 'status', value: activeDataset.encounter.status, desc: 'Status siklus rawat (finished = pasien telah pulang & selesai rawat).' },
+          { name: 'class.code', value: `${activeDataset.encounter.class.code} (${activeDataset.encounter.class.display ?? (activeDataset.encounter.class.code === 'IMP' ? 'Inpatient' : 'Emergency')})`, desc: 'Kelas perawatan medis (menentukan eligibility paket rawat inap vs IGD).' },
+          { name: 'period.start', value: activeDataset.encounter.period?.start ?? '—', desc: 'Waktu resmi pasien mulai dirawat di rumah sakit.' },
+          { name: 'period.end', value: activeDataset.encounter.period?.end ?? '—', desc: 'Waktu resmi pasien keluar / dipulangkan dari rumah sakit.' },
+          { name: 'location', value: `${activeDataset.location.name} (${activeDataset.location.id})`, desc: 'Ruangan bangsal/kamar perawatan tempat pasien dirawat.' },
+          { name: 'serviceProvider', value: `${activeDataset.organization.name} (${activeDataset.organization.id})`, desc: 'Fasilitas rumah sakit yang bertanggung jawab secara hukum atas pelayanan.' },
+          { name: 'diagnosis[]', value: `${activeDataset.conditions[0]?.code.coding?.[0]?.code} (Principal) & ${activeDataset.conditions[1]?.code.coding?.[0]?.code} (Comorbid)`, desc: 'Daftar diagnosa resmi kunjungan lengkap dengan role AD/CM dan ranking.' },
+        ],
+      },
+      {
+        title: '2. Condition & Procedure (Diagnosa Klinis & Tindakan Medis)',
+        type: (activeDataset.conditions[0] ? 'Condition' : 'Procedure') as FhirResourceType,
+        id: activeDataset.conditions[0]?.id ?? activeDataset.procedures[0]?.id,
+        role: 'Bukti medis otentik yang melandasi kode tarif paket klaim. Diagnosa menetapkan masalah klinis pasien berbasis ICD-10, tindakan membuktikan intervensi operatif nyata berbasis ICD-9-CM, dan tanda vital membuktikan derajat keparahan.',
+        invariant: 'obs-7 (larangan root value pada panel multi-komponen), diagnosa harus berstatus active & confirmed.',
+        parameters: [
+          { name: 'Condition Primer (ICD-10)', value: `${activeDataset.conditions[0]?.code.coding?.[0]?.code} - ${activeDataset.conditions[0]?.code.coding?.[0]?.display}`, desc: 'Diagnosa utama yang menjadi penentu utama pengelompokan paket klaim (DRG).' },
+          { name: 'Condition Sekunder (ICD-10)', value: `${activeDataset.conditions[1]?.code.coding?.[0]?.code} - ${activeDataset.conditions[1]?.code.coding?.[0]?.display}`, desc: 'Diagnosa penyerta / komorbiditas yang mempengaruhi tingkat keparahan klaim.' },
+          { name: 'Procedure Utama (ICD-9-CM)', value: `${activeDataset.procedures[0]?.code.coding?.[0]?.code} - ${activeDataset.procedures[0]?.code.coding?.[0]?.display}`, desc: 'Tindakan medis bedah atau intervensi mekanik yang dilakukan dokter.' },
+          { name: 'Observation Vital Signs (LOINC)', value: `85354-9 BP: ${activeDataset.observations[0]?.component?.[0]?.valueQuantity?.value}/${activeDataset.observations[0]?.component?.[1]?.valueQuantity?.value} mm[Hg]`, desc: 'Tanda vital tekanan darah sistolik dan diastolik terstandarisasi UCUM.' },
+          { name: 'verificationStatus', value: 'confirmed', desc: 'Status verifikasi klinis bahwa diagnosa telah dikonfirmasi oleh dokter pemeriksa.' },
+        ],
+      },
+      {
+        title: '3. Composition (Resume Medis Pasien Pulang / Discharge Summary)',
+        type: 'Composition' as const,
+        id: activeDataset.composition.id,
+        role: 'Dokumen legal pelepasan/kepulangan pasien yang ditandatangani oleh Dokter Penanggung Jawab Pelayanan (DPJP). Menjadi prasyarat mutlak verifikasi berkas klaim sebelum diajukan ke penjamin BPJS / Asuransi.',
+        invariant: 'Invarian cmp-1 (setiap seksi wajib memiliki entry, text, atau emptyReason) & cmp-2 (larangan memiliki entry dan emptyReason bersamaan).',
+        parameters: [
+          { name: 'status', value: activeDataset.composition.status, desc: 'Status dokumen (final = resume telah ditandatangani & tidak boleh diubah).' },
+          { name: 'type', value: 'LOINC 18842-5 (Hospital discharge summary)', desc: 'Tipe dokumen standar resume medis kepulangan rawat inap.' },
+          { name: 'author', value: `${activeDataset.composition.author?.[0]?.reference ?? 'dr. Andi Pratama'}`, desc: 'Dokter DPJP yang bertanggung jawab atas isi rekam medis.' },
+          { name: 'section[]', value: '5 Bagian: Alasan Masuk, Riwayat Penyakit, Tindakan Operasi, Terapi Obat, Kondisi Pulang', desc: 'Struktur seksi klinis wajib dengan narrative XHTML terstandarisasi.' },
+          { name: 'date', value: activeDataset.composition.date, desc: 'Waktu penyelesaian resmi dokumen resume medis pulang.' },
+        ],
+      },
+      {
+        title: '4. ChargeItem (Rincian Pembebanan Biaya Layanan & Kamar)',
+        type: 'ChargeItem' as const,
+        id: charges[0]?.id ?? '—',
+        role: 'Mencatat pembebanan setiap rupiah tagihan layanan (kamar perawatan, tindakan bedah, obat farmasi). Setiap item menautkan bukti pendukung klinis melalui supportingInformation.',
+        invariant: 'Rule 5: priceOverride merepresentasikan total harga pembebanan (bukan unit tariff); nilai rupiah tidak boleh bernilai negatif.',
+        parameters: [
+          { name: 'priceOverride.value', value: formatIdr(charges[0]?.priceOverride?.value), desc: 'Nominal rupiah pembebanan per item layanan.' },
+          { name: 'quantity.value', value: `${charges[0]?.quantity?.value ?? 1} unit / hari rawat`, desc: 'Volume kuantitas layanan medis yang diterima pasien.' },
+          { name: 'code', value: `${charges[0]?.code?.coding?.[0]?.code} (${charges[0]?.code?.coding?.[0]?.display})`, desc: 'Klasifikasi rincian layanan (kamar rawat inap, tindakan operasi, atau obat).' },
+          { name: 'supportingInformation', value: charges[0]?.supportingInformation?.[0]?.reference ?? '—', desc: 'Tautan referensi langsung ke dokumen rekam medis yang mendasari biaya.' },
+          { name: 'subject', value: `Patient/${activeDataset.patient.id}`, desc: 'Pasien yang dibebankan biaya layanan.' },
+        ],
+      },
+      {
+        title: '5. Claim (Dokumen Pengajuan Klaim Asuransi / BPJS)',
+        type: 'Claim' as const,
+        id: activeDataset.claim.id,
+        role: 'Berkas klaim formal yang diajukan ke payor (BPJS / Asuransi Swasta). Mengintegrasikan referensi tertutup ke Condition, Procedure, supportingInfo Composition, dan daftar item tagihan.',
+        invariant: 'Rule 4 (Keterlacakan rantai bukti klinis-ke-klaim) & Rule 5 (Claim.total wajib cocok dengan agregasi item.net).',
+        parameters: [
+          { name: 'diagnosisPackageCode', value: activeDataset.claim.diagnosis[0]?.packageCode?.coding?.[0]?.code ?? 'DRG-PACKAGE', desc: 'Kode paket penagihan INA-CBG / diagnosis package code.' },
+          { name: 'diagnosis[].diagnosisReference', value: activeDataset.claim.diagnosis[0]?.diagnosisReference?.reference ?? '—', desc: 'Referensi tertutup ke Condition rekam medis dokter.' },
+          { name: 'procedure[].procedureReference', value: activeDataset.claim.procedure?.[0]?.procedureReference?.reference ?? '—', desc: 'Referensi tertutup ke Procedure tindakan dokter.' },
+          { name: 'supportingInfo[].valueReference', value: activeDataset.claim.supportingInfo?.[0]?.valueReference?.reference ?? '—', desc: 'Referensi tertutup ke resume medis kepulangan (Composition).' },
+          { name: 'total.value', value: formatIdr(activeDataset.claim.total?.value), desc: 'Total nominal rupiah yang diajukan rumah sakit ke penjamin.' },
+          { name: 'item[].length', value: `${activeDataset.claim.item.length} rincian item layanan`, desc: 'Rincian komponen tagihan per layanan (kamar, tindakan, obat).' },
+        ],
+      },
+      {
+        title: '6. ClaimResponse (Keputusan Adjudikasi Penjamin)',
+        type: 'ClaimResponse' as const,
+        id: activeDataset.claimResponse.id,
+        role: 'Respon keputusan resmi dari pihak penjamin (BPJS / Asuransi) atas klaim yang diajukan. Memisahkan nilai yang diajukan (submitted) dengan manfaat yang disetujui (benefit).',
+        invariant: 'Array total[] tidak boleh memuat duplikasi kategori; status outcome harus konsisten dengan nilai benefit.',
+        parameters: [
+          { name: 'outcome', value: activeDataset.claimResponse.outcome, desc: 'Keputusan verifikasi (complete = disetujui, partial = parsial, error = ditolak).' },
+          { name: 'request', value: activeDataset.claimResponse.request?.reference ?? `Claim/${activeDataset.claim.id}`, desc: 'Referensi ke berkas klaim yang diajukan rumah sakit.' },
+          { name: 'total.submitted', value: formatIdr(activeDataset.claimResponse.total?.find(t => t.category?.coding?.some(c => c.code === 'submitted'))?.amount?.value), desc: 'Total nilai klaim yang diajukan rumah sakit.' },
+          { name: 'total.benefit', value: formatIdr(activeDataset.claimResponse.total?.find(t => t.category?.coding?.some(c => c.code === 'benefit'))?.amount?.value), desc: 'Total nilai manfaat yang disetujui oleh penjamin.' },
+          { name: 'disposition', value: activeDataset.claimResponse.disposition ?? 'Disetujui sesuai tarif klaim resmi.', desc: 'Keterangan tertulis keputusan tim verifikator klaim.' },
+        ],
+      },
+      {
+        title: '7. ExplanationOfBenefit (Rekonsiliasi Akhir Finansial / EOB)',
+        type: 'ExplanationOfBenefit' as const,
+        id: activeDataset.explanationOfBenefit.id,
+        role: 'Dokumen audit rekonsiliasi final yang merangkum keseluruhan episode penagihan: kepesertaan Coverage, total biaya diajukan, total manfaat dibayarkan, dan nilai selisih (variance).',
+        invariant: 'Variance bernilai negatif jika terjadi penolakan/dispute selisih tarif; bernilai 0 jika klaim disetujui penuh.',
+        parameters: [
+          { name: 'status', value: activeDataset.explanationOfBenefit.status ?? 'active', desc: 'Status laporan rekonsiliasi audit finansial.' },
+          { name: 'outcome', value: activeDataset.explanationOfBenefit.outcome ?? activeDataset.claimResponse.outcome, desc: 'Hasil final adjudikasi.' },
+          { name: 'insurance.coverage', value: activeDataset.explanationOfBenefit.insurance?.[0]?.coverage?.reference ?? `Coverage/${activeDataset.coverage.id}`, desc: 'Polis / kartu kepesertaan jaminan kesehatan pasien.' },
+          { name: 'totalSubmitted', value: formatIdr(activeDataset.claim.total?.value), desc: 'Total biaya diajukan oleh rumah sakit.' },
+          { name: 'totalBenefit', value: formatIdr(activeDataset.claimResponse.total?.find(t => t.category?.coding?.some(c => c.code === 'benefit'))?.amount?.value), desc: 'Total manfaat yang dibayarkan oleh penjamin.' },
+          { name: 'variance', value: formatIdr(Number(activeDataset.claimResponse.total?.find(t => t.category?.coding?.some(c => c.code === 'benefit'))?.amount?.value ?? 0) - Number(activeDataset.claim.total?.value ?? 0)), desc: 'Selisih rupiah (0 = disetujui penuh tanpa potongan penjamin).' },
+        ],
+      },
+    ];
+  }, [activeDataset, charges, claim, response, eob]);
 
   const beforeAfterComparisons = [
     {
@@ -1187,21 +1296,109 @@ function EvidenceEditor() {
 
           {/* Interactive 7 Stages Alur */}
           <div className="flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/50 p-3">
-            {stages.map((stage, index) => (
-              <div key={stage.label} className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => activeDataset && selectResource(stage.type, stage.value)}
-                  className="rounded border border-slate-700 bg-slate-900 px-2.5 py-2 text-left hover:border-cyan-400 transition"
-                  title="Klik untuk membuka resource di Inspector JSON"
-                >
-                  <span className="block text-[9px] text-slate-500">{stage.label}</span>
-                  <span className="mt-1 block max-w-[130px] truncate text-[10px] font-semibold text-cyan-200">{stage.value}</span>
-                </button>
-                {index < stages.length - 1 && <ArrowRight className="h-3 w-3 text-slate-600" />}
-              </div>
-            ))}
+            {stages.map((stage, index) => {
+              const isSelected = selectedStageIndex === index;
+              return (
+                <div key={stage.label} className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedStageIndex((prev) => (prev === index ? null : index));
+                      if (activeDataset) selectResource(stage.type, stage.value);
+                    }}
+                    className={`rounded border px-2.5 py-2 text-left transition ${
+                      isSelected
+                        ? 'border-cyan-400 bg-cyan-950/70 shadow-md ring-1 ring-cyan-400/50'
+                        : 'border-slate-700 bg-slate-900 hover:border-slate-500'
+                    }`}
+                    title="Klik untuk membuka deskripsi parameter & inspeksi JSON"
+                  >
+                    <span className="block text-[9px] text-slate-500">{stage.label}</span>
+                    <span className={`mt-1 block max-w-[130px] truncate text-[10px] font-semibold ${isSelected ? 'text-cyan-200' : 'text-slate-300'}`}>
+                      {stage.value}
+                    </span>
+                  </button>
+                  {index < stages.length - 1 && <ArrowRight className="h-3 w-3 text-slate-600" />}
+                </div>
+              );
+            })}
           </div>
+
+          {/* Detailed Parameter Card when clicked */}
+          {selectedStageIndex !== null && stageDetails[selectedStageIndex] && (
+            <div className="rounded-lg border border-cyan-500/40 bg-slate-950/80 p-3.5 shadow-lg space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2.5">
+                <div className="flex items-center gap-2">
+                  <span className="rounded bg-cyan-400/20 px-2 py-0.5 font-mono text-[10px] font-bold text-cyan-300">
+                    {stageDetails[selectedStageIndex].type}
+                  </span>
+                  <h3 className="text-xs font-bold text-slate-100">
+                    {stageDetails[selectedStageIndex].title}
+                  </h3>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const s = stageDetails[selectedStageIndex];
+                      if (activeDataset && s) selectResource(s.type, s.id);
+                    }}
+                    className="inline-flex items-center gap-1 rounded bg-slate-800 px-2.5 py-1 text-[10px] font-semibold text-cyan-200 hover:bg-slate-700 transition"
+                  >
+                    <Search className="h-3 w-3" /> Inspeksi JSON di Panel Kanan →
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedStageIndex(null)}
+                    className="text-slate-400 hover:text-slate-200 p-1"
+                    title="Tutup deskripsi"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                  Peran dalam Rantai Bukti (Evidence Chain Role):
+                </div>
+                <p className="mt-1 text-[11px] leading-relaxed text-slate-300">
+                  {stageDetails[selectedStageIndex].role}
+                </p>
+              </div>
+
+              <div className="rounded border border-slate-800 bg-slate-900/60 p-2.5">
+                <div className="mb-2 text-[10px] font-semibold uppercase tracking-wider text-cyan-300">
+                  Parameter Kunci & Nilai Aktual ({activeDataset?.hospitalName}):
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-[10.5px]">
+                    <thead>
+                      <tr className="border-b border-slate-800 text-[9.5px] uppercase text-slate-500">
+                        <th className="py-1.5 pr-2 w-1/4">Parameter FHIR</th>
+                        <th className="py-1.5 px-2 w-1/3">Nilai Aktual</th>
+                        <th className="py-1.5 pl-2">Signifikansi Klinis / Finansial</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800/60 font-mono">
+                      {stageDetails[selectedStageIndex].parameters.map((param, pIdx) => (
+                        <tr key={pIdx}>
+                          <td className="py-1.5 pr-2 font-bold text-cyan-300">{param.name}</td>
+                          <td className="py-1.5 px-2 text-emerald-300 font-semibold">{param.value}</td>
+                          <td className="py-1.5 pl-2 font-sans text-slate-400 text-[10px] leading-relaxed">{param.desc}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 rounded border border-amber-500/25 bg-amber-500/10 px-2.5 py-1.5 text-[10px] text-amber-200">
+                <Info className="h-3.5 w-3.5 shrink-0 text-amber-300" />
+                <span><b>Invarian Kepatuhan:</b> {stageDetails[selectedStageIndex].invariant}</span>
+              </div>
+            </div>
+          )}
 
           {/* Interactive Controls & Simulator */}
           <div className="grid gap-4 xl:grid-cols-2">
