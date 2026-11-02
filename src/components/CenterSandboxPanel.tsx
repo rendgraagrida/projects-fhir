@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Activity, AlertTriangle, ArrowDown, ArrowLeft, ArrowLeftRight, ArrowRight, BadgeDollarSign, CheckCircle2, ChevronDown, ChevronsDown, ChevronsUp, Clock, Database, FileText, GitMerge, Info, Layers, Link2, Pause, Play, RefreshCcw, Scale, Search, ShieldCheck, SlidersHorizontal, Table2, Unlink, X } from 'lucide-react';
-import { Background, ReactFlow, type Edge, type Node } from '@xyflow/react';
+import { Background, BaseEdge, getBezierPath, ReactFlow, type Edge, type EdgeProps, type Node } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import { ALL_NORMALIZATION_LAWS, FHIR_ALL_MODULES_CATALOG, SQL_TO_FHIR_CHEAT_SHEET } from '../data/curriculum-modules';
 import { SAMPLE_ANALYTICAL_SQL_QUERIES, SIMRS_HOSPITAL_SEEDS } from '../data/simrs-normalization-seeds';
@@ -2030,6 +2030,68 @@ const resourceColumnIndex = (type: FhirResourceType): number => {
   if (type === 'Coverage' || type === 'CoverageEligibilityResponse' || type === 'Account' || type === 'ChargeItem' || type === 'Claim') return 4; // Kolom 4 (Billing & Klaim)
   return 5; // Kolom 5 (Adjudikasi & EOB)
 };
+interface FlowEdgeData extends Record<string, unknown> {
+  isWalking?: boolean;
+  isTraversed?: boolean;
+}
+
+function FlowParticleEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style = {},
+  markerEnd,
+  data,
+}: EdgeProps<Edge<FlowEdgeData>>) {
+  const [edgePath] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+
+  const isWalking = data?.isWalking;
+  const isTraversed = data?.isTraversed;
+
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        style={{
+          ...style,
+          stroke: isTraversed ? '#ef4444' : isWalking ? '#38bdf8' : '#334155',
+          strokeWidth: isTraversed ? 2.5 : isWalking ? 2.5 : 1.2,
+          transition: 'stroke 0.3s ease, stroke-width 0.3s ease',
+        }}
+        markerEnd={markerEnd}
+      />
+      {/* Satu titik yang bergerak perlahan dari ujung source ke ujung target sebagai penanda flow dan pembentuk garis */}
+      {isWalking && (
+        <g>
+          {/* Aura berpendar di luar */}
+          <circle r="7" fill="#38bdf8" opacity="0.35">
+            <animateMotion dur="2.2s" repeatCount="indefinite" path={edgePath} />
+          </circle>
+          {/* Titik inti tajam dan terang */}
+          <circle r="4" fill="#ffffff" stroke="#06b6d4" strokeWidth="1.5">
+            <animateMotion dur="2.2s" repeatCount="indefinite" path={edgePath} />
+          </circle>
+        </g>
+      )}
+    </>
+  );
+}
+
+const customEdgeTypes = {
+  flowEdge: FlowParticleEdge,
+};
 
 function ResourceGraph() {
   const activeDataset = useFhirStore((state) => state.activeDataset);
@@ -2037,6 +2099,7 @@ function ResourceGraph() {
   const [isFullGraphMode, setIsFullGraphMode] = useState<boolean>(false);
   const [guidedStep, setGuidedStep] = useState<number>(1);
   const [isAutoPlaying, setIsAutoPlaying] = useState<boolean>(false);
+  const [showRelations, setShowRelations] = useState<boolean>(false);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [activeStep, setActiveStep] = useState<number>(-1);
   const [manuallyClickedEdgeIds, setManuallyClickedEdgeIds] = useState<Set<string>>(new Set());
@@ -2046,6 +2109,7 @@ function ResourceGraph() {
     setActiveStep(-1);
     setGuidedStep(1);
     setIsAutoPlaying(false);
+    setShowRelations(false);
     setManuallyClickedEdgeIds(new Set());
   }, [activeDataset?.hospitalId]);
 
@@ -2116,7 +2180,9 @@ function ResourceGraph() {
           id: edgeId,
           source,
           target: record.reference,
+          type: 'flowEdge',
           animated: false,
+          data: { isWalking: false, isTraversed: false },
           style: { stroke: '#334155', strokeWidth: 1.2 },
         });
         addNeighbor(source, record.reference);
@@ -2171,11 +2237,26 @@ function ResourceGraph() {
   }, [selectedNodeId, guidedStep, connectedEdgesList]);
 
   const { visibleNodes, visibleEdges, connectedCount } = useMemo(() => {
-    // Mode 1: Mode Seluruh Graph Penuh (hanya jika user memilih toggle Tampilkan Penuh)
+    // Mode 1 (DEFAULT): Jika belum ada node yang diklik & showRelations mati:
+    // SECARA DEFAULT SAMA SEKALI TIDAK MENAMPILKAN GARIS RELASI (EMPTY [])
+    if (!selectedNodeId && !showRelations) {
+      const activeNodes = isFullGraphMode
+        ? allNodes
+        : allNodes.filter((node) => activeStageTypeSet.has(node.data.resourceType));
+      return {
+        visibleNodes: activeNodes,
+        visibleEdges: [],
+        connectedCount: activeNodes.length,
+      };
+    }
+
+    // Mode 2: Mode Seluruh Graph Penuh (hanya jika showRelations diaktifkan)
     if (isFullGraphMode && !selectedNodeId) {
       const defaultEdges = allEdges.map((edge) => ({
         ...edge,
+        type: 'flowEdge',
         animated: false,
+        data: { isWalking: false, isTraversed: manuallyClickedEdgeIds.has(edge.id) },
         style: {
           stroke: manuallyClickedEdgeIds.has(edge.id) ? '#ef4444' : '#334155',
           strokeWidth: manuallyClickedEdgeIds.has(edge.id) ? 2.5 : 1.2,
@@ -2184,7 +2265,7 @@ function ResourceGraph() {
       return { visibleNodes: allNodes, visibleEdges: defaultEdges, connectedCount: allNodes.length };
     }
 
-    // Mode 2: Fokus pada Node Tertentu yang Diklik
+    // Mode 3: Fokus pada Node Tertentu yang Diklik (Alur berjalan satu demi satu dan berubah merah saat terlewati)
     if (selectedNodeId) {
       const connected = new Set<string>();
       connected.add(selectedNodeId);
@@ -2217,34 +2298,24 @@ function ResourceGraph() {
           const isTraversed = isManual || (edgeIndex !== -1 && edgeIndex < activeStep);
           const isCurrentlyWalking = edgeIndex !== -1 && edgeIndex === activeStep;
 
-          if (isCurrentlyWalking) {
-            return {
-              ...edge,
-              animated: true,
-              style: { stroke: '#22d3ee', strokeWidth: 3 },
-            };
-          }
-
-          if (isTraversed) {
-            return {
-              ...edge,
-              animated: false,
-              style: { stroke: '#ef4444', strokeWidth: 2.5 },
-            };
-          }
-
           return {
             ...edge,
-            animated: false,
-            style: { stroke: '#475569', strokeWidth: 1.5 },
+            type: 'flowEdge',
+            data: {
+              isWalking: isCurrentlyWalking,
+              isTraversed,
+            },
+            style: {
+              stroke: isTraversed ? '#ef4444' : isCurrentlyWalking ? '#38bdf8' : '#475569',
+              strokeWidth: isTraversed ? 2.5 : isCurrentlyWalking ? 2.5 : 1.5,
+            },
           };
         });
 
       return { visibleNodes: filteredNodes, visibleEdges: filteredEdges, connectedCount: filteredNodes.length };
     }
 
-    // Mode 3 (DEFAULT): Alur Terpandu Bertahap (Guided Step-by-Step Flow)
-    // Hanya menampilkan node pada tahap saat ini
+    // Mode 4: Alur Terpandu Bertahap dengan showRelations diaktifkan manual
     const guidedNodes = allNodes.filter((node) => activeStageTypeSet.has(node.data.resourceType));
     const guidedNodeIds = new Set(guidedNodes.map((n) => n.id));
 
@@ -2256,26 +2327,17 @@ function ResourceGraph() {
         const isTraversed = isManual || (edgeIndex !== -1 && edgeIndex < activeStep);
         const isCurrentlyWalking = edgeIndex !== -1 && edgeIndex === activeStep;
 
-        if (isCurrentlyWalking) {
-          return {
-            ...edge,
-            animated: true,
-            style: { stroke: '#22d3ee', strokeWidth: 3 },
-          };
-        }
-
-        if (isTraversed) {
-          return {
-            ...edge,
-            animated: false,
-            style: { stroke: '#ef4444', strokeWidth: 2.5 },
-          };
-        }
-
         return {
           ...edge,
-          animated: false,
-          style: { stroke: '#334155', strokeWidth: 1.5 },
+          type: 'flowEdge',
+          data: {
+            isWalking: isCurrentlyWalking,
+            isTraversed,
+          },
+          style: {
+            stroke: isTraversed ? '#ef4444' : isCurrentlyWalking ? '#38bdf8' : '#334155',
+            strokeWidth: isTraversed ? 2.5 : isCurrentlyWalking ? 2.5 : 1.5,
+          },
         };
       });
 
@@ -2284,7 +2346,7 @@ function ResourceGraph() {
       visibleEdges: guidedEdges,
       connectedCount: guidedNodes.length,
     };
-  }, [allNodes, allEdges, adjacency, selectedNodeId, isFullGraphMode, activeStageTypeSet, connectedEdgesList, activeStep, manuallyClickedEdgeIds]);
+  }, [allNodes, allEdges, adjacency, selectedNodeId, isFullGraphMode, showRelations, activeStageTypeSet, connectedEdgesList, activeStep, manuallyClickedEdgeIds]);
 
   return (
     <div className="flex h-full min-h-[620px] flex-col">
@@ -2296,13 +2358,25 @@ function ResourceGraph() {
               <GitMerge className="h-4 w-4 text-violet-300" /> Visualisasi Graph Relasi FHIR Terpandu
             </div>
             <p className="mt-0.5 text-xs text-slate-400">
-              {isFullGraphMode
-                ? 'Mode Penuh: Menampilkan seluruh 35 modul dan 124 relasi global.'
-                : `Alur Bertahap: ${activeStageConfig.description}`}
+              Secara default garis relasi disembunyikan agar tampilan bersih. Klik node mana pun untuk menelusuri alur relasinya (garis yang terlewati akan berubah merah).
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {/* Toggle Tampilkan / Sembunyikan Garis Relasi */}
+            <button
+              type="button"
+              onClick={() => setShowRelations((prev) => !prev)}
+              className={`rounded border px-2.5 py-1 text-[10px] font-semibold transition ${
+                showRelations
+                  ? 'border-emerald-500 bg-emerald-400 text-slate-950 font-bold'
+                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600'
+              }`}
+              title="Aktifkan untuk memunculkan garis relasi di seluruh canvas"
+            >
+              {showRelations ? '✕ Sembunyikan Garis' : '⚡ Tampilkan Garis Relasi'}
+            </button>
+
             {/* Toggle Mode: Bertahap (Default) vs Penuh */}
             <button
               type="button"
@@ -2316,16 +2390,16 @@ function ResourceGraph() {
                   : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-600'
               }`}
             >
-              {isFullGraphMode ? '✓ Mode Penuh Aktif' : '🌐 Tampilkan Seluruh Graph (Mode Penuh)'}
+              {isFullGraphMode ? '✓ Mode Penuh' : '🌐 Mode Lengkap (35 Modul)'}
             </button>
-
             {/* Legend Indikator Status Garis */}
             <div className="flex items-center gap-2.5 rounded-lg border border-slate-800 bg-slate-900/80 px-2.5 py-1 text-[9.5px]">
-              <span className="flex items-center gap-1 text-slate-300">
-                <span className="inline-block h-2 w-2 rounded-full bg-cyan-400 animate-pulse" /> Berjalan
+              <span className="flex items-center gap-1.5 text-cyan-300">
+                <span className="inline-block h-2.5 w-2.5 rounded-full bg-cyan-400 border border-white animate-pulse" />
+                <span>Titik Alur (Source ➔ Target)</span>
               </span>
               <span className="flex items-center gap-1 text-slate-300">
-                <span className="inline-block h-2 w-2 rounded-full bg-rose-500" /> Terlewati (Merah)
+                <span className="inline-block h-2 w-2 rounded-full bg-rose-500" /> Terlewati (Garis Merah)
               </span>
             </div>
           </div>
@@ -2445,6 +2519,7 @@ function ResourceGraph() {
               return next;
             });
           }}
+          edgeTypes={customEdgeTypes}
         >
           <Background color="#1e293b" gap={24} />
         </ReactFlow>
