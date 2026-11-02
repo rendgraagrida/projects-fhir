@@ -2113,18 +2113,6 @@ function ResourceGraph() {
     setManuallyClickedEdgeIds(new Set());
   }, [activeDataset?.hospitalId]);
 
-  // Auto-play stepper alur setiap 3.5 detik jika aktif
-  useEffect(() => {
-    if (!isAutoPlaying) return;
-    const autoTimer = setInterval(() => {
-      setGuidedStep((prev) => {
-        if (prev < GUIDED_FLOW_STAGES.length) return prev + 1;
-        setIsAutoPlaying(false);
-        return prev;
-      });
-    }, 3500);
-    return () => clearInterval(autoTimer);
-  }, [isAutoPlaying]);
 
   const { allNodes, allEdges, adjacency } = useMemo(() => {
     const resources = activeDataset?.allResources ?? [];
@@ -2214,6 +2202,19 @@ function ResourceGraph() {
       return activeStageTypeSet.has(srcType) && activeStageTypeSet.has(tgtType);
     });
   }, [allEdges, selectedNodeId, activeStageTypeSet]);
+  // Auto-play stepper alur dengan kecepatan terkoordinasi (memberi waktu titik bergerak membentuk garis)
+  useEffect(() => {
+    if (!isAutoPlaying) return;
+    const stepDelay = Math.max(4500, (connectedEdgesList.length + 1) * 1400);
+    const autoTimer = setTimeout(() => {
+      setGuidedStep((prev) => {
+        if (prev < GUIDED_FLOW_STAGES.length) return prev + 1;
+        setIsAutoPlaying(false);
+        return prev;
+      });
+    }, stepDelay);
+    return () => clearTimeout(autoTimer);
+  }, [isAutoPlaying, guidedStep, connectedEdgesList.length]);
 
   // Timer animasi sekuensial satu per satu garis
   useEffect(() => {
@@ -2231,15 +2232,15 @@ function ResourceGraph() {
         clearInterval(timer);
         return prev;
       });
-    }, 750);
+    }, 1400);
 
     return () => clearInterval(timer);
   }, [selectedNodeId, guidedStep, connectedEdgesList]);
 
   const { visibleNodes, visibleEdges, connectedCount } = useMemo(() => {
-    // Mode 1 (DEFAULT): Jika belum ada node yang diklik & showRelations mati:
-    // SECARA DEFAULT SAMA SEKALI TIDAK MENAMPILKAN GARIS RELASI (EMPTY [])
-    if (!selectedNodeId && !showRelations) {
+    // Mode 1 (DEFAULT): Jika belum ada node yang diklik & showRelations mati & tidak sedang auto-playing:
+    // SECARA DEFAULT: GARIS RELASI SAMA SEKALI TIDAK MENAMPILKAN (EMPTY [])
+    if (!selectedNodeId && !showRelations && !isAutoPlaying) {
       const activeNodes = isFullGraphMode
         ? allNodes
         : allNodes.filter((node) => activeStageTypeSet.has(node.data.resourceType));
@@ -2413,7 +2414,10 @@ function ResourceGraph() {
               <button
                 type="button"
                 disabled={guidedStep <= 1}
-                onClick={() => setGuidedStep((prev) => Math.max(1, prev - 1))}
+                onClick={() => {
+                  setGuidedStep((prev) => Math.max(1, prev - 1));
+                  setShowRelations(true);
+                }}
                 className="rounded bg-slate-800 px-2.5 py-1 text-[10px] font-bold text-slate-300 transition hover:bg-slate-700 disabled:opacity-40"
               >
                 ◀ Sebelumnya
@@ -2423,9 +2427,9 @@ function ResourceGraph() {
                 {GUIDED_FLOW_STAGES.map((stg) => (
                   <button
                     key={stg.step}
-                    type="button"
                     onClick={() => {
                       setGuidedStep(stg.step);
+                      setShowRelations(true);
                       setIsAutoPlaying(false);
                     }}
                     className={`rounded px-2 py-1 text-[9.5px] font-semibold transition ${
@@ -2445,7 +2449,10 @@ function ResourceGraph() {
               <button
                 type="button"
                 disabled={guidedStep >= GUIDED_FLOW_STAGES.length}
-                onClick={() => setGuidedStep((prev) => Math.min(GUIDED_FLOW_STAGES.length, prev + 1))}
+                onClick={() => {
+                  setGuidedStep((prev) => Math.min(GUIDED_FLOW_STAGES.length, prev + 1));
+                  setShowRelations(true);
+                }}
                 className="rounded bg-slate-800 px-2.5 py-1 text-[10px] font-bold text-slate-300 transition hover:bg-slate-700 disabled:opacity-40"
               >
                 Berikutnya ▶
@@ -2456,7 +2463,15 @@ function ResourceGraph() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                onClick={() => setIsAutoPlaying((prev) => !prev)}
+                onClick={() => {
+                  if (!isAutoPlaying) {
+                    if (guidedStep >= GUIDED_FLOW_STAGES.length) setGuidedStep(1);
+                    setShowRelations(true);
+                    setIsAutoPlaying(true);
+                  } else {
+                    setIsAutoPlaying(false);
+                  }
+                }}
                 className={`inline-flex items-center gap-1.5 rounded px-2.5 py-1 text-[10px] font-bold transition ${
                   isAutoPlaying
                     ? 'bg-amber-400 text-slate-950 animate-pulse'
