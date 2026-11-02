@@ -1,0 +1,14 @@
+services:
+  fhir-lab:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fhir-lab-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
